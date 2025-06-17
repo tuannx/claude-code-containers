@@ -1,5 +1,5 @@
 {
-	"name": "hello-world-containers-template",
+	"name": "claude-code-containers-template",
 	"description": "Build a Container-enabled Worker",
 	"version": "0.0.3",
 	"private": true,

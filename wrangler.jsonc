@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "hello-containers",
+	"name": "claude-code-containers",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-05-23",
 	"compatibility_flags": [
@@ -14,7 +14,7 @@
 			"class_name": "MyContainer",
 			"image": "./Dockerfile",
 			"max_instances": 10,
-			"name": "hello-containers"
+			"name": "claude-code-containers"
 		}
 	],
 	"durable_objects": {
