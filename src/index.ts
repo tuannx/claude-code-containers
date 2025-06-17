@@ -60,7 +60,7 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
 
 async function handleGitHubSetup(_request: Request, origin: string): Promise<Response> {
   const webhookUrl = `${origin}/webhooks/github`;
-  const manifest = generateAppManifest('https://claude-code-containers.ghostwriternr.workers.dev');
+  const manifest = generateAppManifest(origin);
   const manifestJson = JSON.stringify(manifest);
 
   const html = `
