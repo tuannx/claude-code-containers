@@ -1,9 +1,9 @@
 const http = require('http');
 const fs = require('fs').promises;
 const path = require('path');
-const { execSync, spawn } = require('child_process');
-const { query } = require('@anthropic-ai/claude-code');
-const { Octokit } = require('@octokit/rest');
+const {execSync, spawn} = require('child_process');
+const {query} = require('@anthropic-ai/claude-code');
+const {Octokit} = require('@octokit/rest');
 const simpleGit = require('simple-git');
 
 const PORT = 8080;

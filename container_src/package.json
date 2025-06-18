@@ -8,9 +8,9 @@
     "dev": "node main.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^0.1.0",
-    "@octokit/rest": "^20.0.2",
-    "simple-git": "^3.20.0"
+    "@anthropic-ai/claude-code": "^1.0.27",
+    "@octokit/rest": "^22.0.0",
+    "simple-git": "^3.28.0"
   },
   "engines": {
     "node": ">=18.0.0"

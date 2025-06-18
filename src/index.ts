@@ -62,6 +62,9 @@ interface GitHubAppConfig {
   createdAt: string;
   lastWebhookAt?: string;
   webhookCount: number;
+  // Claude Code integration
+  anthropicApiKey?: string; // encrypted
+  claudeSetupAt?: string;
 }
 
 // Encryption utilities
@@ -254,6 +257,287 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
       'issues'
     ]
   };
+}
+
+async function handleClaudeSetup(request: Request, origin: string): Promise<Response> {
+  const url = new URL(request.url);
+  
+  // Handle POST request to save API key
+  if (request.method === 'POST') {
+    try {
+      const formData = await request.formData();
+      const apiKey = formData.get('anthropic_api_key') as string;
+      
+      if (!apiKey || !apiKey.startsWith('sk-ant-')) {
+        throw new Error('Invalid Anthropic API key format');
+      }
+      
+      // Store the API key securely in a deployment-specific Durable Object
+      const deploymentId = 'claude-config'; // Single config per deployment
+      const id = env.GITHUB_APP_CONFIG.idFromName(deploymentId);
+      const configDO = env.GITHUB_APP_CONFIG.get(id);
+      
+      // Encrypt the API key
+      const encryptedApiKey = await encrypt(apiKey);
+      
+      // Store in Durable Object
+      await configDO.fetch(new Request('http://internal/store-claude-key', {
+        method: 'POST',
+        body: JSON.stringify({
+          anthropicApiKey: encryptedApiKey,
+          claudeSetupAt: new Date().toISOString()
+        })
+      }));
+      
+      return new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claude Code Setup Complete</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .success { color: #28a745; }
+        .next-btn {
+            display: inline-block;
+            background: #0969da;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="success">✅ Claude Code API Key Configured!</h1>
+    <p>Your Anthropic API key has been securely stored and encrypted.</p>
+    <p>Claude Code is now ready to process GitHub issues automatically!</p>
+    
+    <a href="/gh-setup" class="next-btn">
+        📱 Setup GitHub Integration
+    </a>
+    
+    <p><small>Your API key is encrypted and stored securely in Cloudflare's Durable Objects.</small></p>
+</body>
+</html>`, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+      
+    } catch (error) {
+      return new Response(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claude Code Setup Error</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .error { color: #dc3545; }
+        .back-btn {
+            display: inline-block;
+            background: #6c757d;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1 class="error">❌ Setup Error</h1>
+    <p>Error: ${error.message}</p>
+    
+    <a href="/claude-setup" class="back-btn">
+        ← Try Again
+    </a>
+</body>
+</html>`, {
+        headers: { 'Content-Type': 'text/html' },
+        status: 400
+      });
+    }
+  }
+  
+  // Show setup form
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claude Code Setup - Anthropic API Key</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .setup-form {
+            background: #f5f5f5;
+            padding: 30px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .submit-btn {
+            background: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+        }
+        .submit-btn:hover {
+            background: #218838;
+        }
+        .info-box {
+            background: #e3f2fd;
+            padding: 20px;
+            border-radius: 6px;
+            border-left: 4px solid #2196f3;
+            margin: 20px 0;
+        }
+        .steps {
+            margin: 30px 0;
+        }
+        .step {
+            margin: 15px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        .step-number {
+            position: absolute;
+            left: 0;
+            top: 0;
+            background: #0969da;
+            color: white;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .security-note {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #28a745;
+            margin: 20px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Claude Code Setup</h1>
+        <p>Configure your Anthropic API key to enable AI-powered GitHub issue processing</p>
+    </div>
+
+    <div class="info-box">
+        <h3>🔑 What you'll need</h3>
+        <p>An Anthropic API key with access to Claude. You can get one from the <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a>.</p>
+    </div>
+
+    <div class="steps">
+        <h3>Quick Setup Steps</h3>
+
+        <div class="step">
+            <div class="step-number">1</div>
+            <strong>Get your API Key</strong><br>
+            Visit <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a> and create an API key (starts with "sk-ant-").
+        </div>
+
+        <div class="step">
+            <div class="step-number">2</div>
+            <strong>Enter API Key</strong><br>
+            Paste your API key in the form below. It will be encrypted and stored securely.
+        </div>
+
+        <div class="step">
+            <div class="step-number">3</div>
+            <strong>Setup GitHub Integration</strong><br>
+            After saving your key, configure GitHub to send webhooks for automatic issue processing.
+        </div>
+    </div>
+
+    <form method="POST" class="setup-form">
+        <div class="form-group">
+            <label for="anthropic_api_key">Anthropic API Key</label>
+            <input 
+                type="password" 
+                id="anthropic_api_key" 
+                name="anthropic_api_key" 
+                placeholder="sk-ant-api03-..." 
+                required 
+                pattern="sk-ant-.*"
+                title="API key must start with 'sk-ant-'"
+            >
+        </div>
+        
+        <button type="submit" class="submit-btn">
+            🔐 Save API Key Securely
+        </button>
+    </form>
+
+    <div class="security-note">
+        <strong>🔒 Security:</strong> Your API key is encrypted using AES-256-GCM before storage. 
+        Only your worker deployment can decrypt and use it. It's never logged or exposed.
+    </div>
+
+    <p><strong>Already configured?</strong> <a href="/gh-setup">Continue to GitHub Setup →</a></p>
+    
+    <hr style="margin: 40px 0;">
+    <p style="text-align: center;"><a href="/">← Back to Home</a></p>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html' }
+  });
 }
 
 async function handleGitHubSetup(_request: Request, origin: string): Promise<Response> {
@@ -1022,9 +1306,18 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
   const tokenResponse = await configDO.fetch(new Request('http://internal/get-installation-token'));
   const tokenData = await tokenResponse.json() as { token: string };
 
+  // Get Claude API key from secure storage
+  const claudeConfigDO = env.GITHUB_APP_CONFIG.get(env.GITHUB_APP_CONFIG.idFromName('claude-config'));
+  const claudeKeyResponse = await claudeConfigDO.fetch(new Request('http://internal/get-claude-key'));
+  const claudeKeyData = await claudeKeyResponse.json() as { anthropicApiKey: string | null };
+
+  if (!claudeKeyData.anthropicApiKey) {
+    throw new Error('Claude API key not configured. Please visit /claude-setup first.');
+  }
+
   // Prepare environment variables for the container
   const issueContext = {
-    ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+    ANTHROPIC_API_KEY: claudeKeyData.anthropicApiKey,
     GITHUB_TOKEN: tokenData.token,
     ISSUE_ID: issue.id.toString(),
     ISSUE_NUMBER: issue.number.toString(),
@@ -1132,6 +1425,17 @@ export class GitHubAppConfigDO {
       return new Response(JSON.stringify({ token }));
     }
 
+    if (url.pathname === '/store-claude-key' && request.method === 'POST') {
+      const claudeData = await request.json() as { anthropicApiKey: string; claudeSetupAt: string };
+      await this.storeClaudeApiKey(claudeData.anthropicApiKey, claudeData.claudeSetupAt);
+      return new Response('OK');
+    }
+
+    if (url.pathname === '/get-claude-key' && request.method === 'GET') {
+      const apiKey = await this.getDecryptedClaudeApiKey();
+      return new Response(JSON.stringify({ anthropicApiKey: apiKey }));
+    }
+
     return new Response('Not Found', { status: 404 });
   }
 
@@ -1233,6 +1537,28 @@ export class GitHubAppConfigDO {
       return null;
     }
   }
+
+  // Claude Code API key management
+  async storeClaudeApiKey(encryptedApiKey: string, setupTimestamp: string): Promise<void> {
+    // Store in a separate key for easier management
+    await this.storage.put('claude_config', {
+      anthropicApiKey: encryptedApiKey,
+      claudeSetupAt: setupTimestamp
+    });
+  }
+
+  async getDecryptedClaudeApiKey(): Promise<string | null> {
+    try {
+      const claudeConfig = await this.storage.get('claude_config') as { anthropicApiKey: string; claudeSetupAt: string } | null;
+      if (!claudeConfig) return null;
+
+      const decryptedKey = await decrypt(claudeConfig.anthropicApiKey);
+      return decryptedKey;
+    } catch (error) {
+      console.error('Failed to decrypt Claude API key:', error);
+      return null;
+    }
+  }
 }
 
 export class MyContainer extends Container {
@@ -1262,6 +1588,11 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
+
+    // Claude Code Setup Route
+    if (pathname === '/claude-setup') {
+      return handleClaudeSetup(request, url.origin);
+    }
 
     // GitHub App Setup Routes
     if (pathname === '/gh-setup') {
@@ -1315,8 +1646,20 @@ export default {
       return await getContainer(env.MY_CONTAINER).fetch(request);
     }
 
-    return new Response(
-      'Call /container/<ID> to start a container for each ID with a 10s timeout.\nCall /lb to load balancing over multiple containers\nCall /error to start a container that errors\nCall /singleton to get a single specific container\n\nGitHub Integration:\nCall /gh-setup to configure GitHub App integration'
-    );
+    return new Response(`
+🤖 Claude Code Container Integration
+
+Setup Instructions:
+1. Configure Claude Code: /claude-setup
+2. Setup GitHub Integration: /gh-setup
+
+Container Testing Routes:
+- /container - Basic container health check
+- /lb - Load balancing over multiple containers  
+- /error - Test error handling
+- /singleton - Single container instance
+
+Once both setups are complete, create GitHub issues to trigger automatic Claude Code processing!
+    `);
   },
 };

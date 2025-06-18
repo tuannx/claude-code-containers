@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
 
-FROM node:18-alpine AS base
+FROM node:22-slim AS base
 
-# Install Python, pip, and git for Claude Code dependencies
-RUN apk add --no-cache python3 py3-pip git
+# Update package lists and install dependencies
+RUN apt-get update && \
+    apt-get install -y \
+        python3 \
+        python3-pip \
+        git \
+        build-essential \
+        python3-dev \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
