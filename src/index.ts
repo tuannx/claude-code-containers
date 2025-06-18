@@ -259,7 +259,7 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
   };
 }
 
-async function handleClaudeSetup(request: Request, origin: string): Promise<Response> {
+async function handleClaudeSetup(request: Request, origin: string, env: any): Promise<Response> {
   const url = new URL(request.url);
   
   // Handle POST request to save API key
@@ -1591,7 +1591,7 @@ export default {
 
     // Claude Code Setup Route
     if (pathname === '/claude-setup') {
-      return handleClaudeSetup(request, url.origin);
+      return handleClaudeSetup(request, url.origin, env);
     }
 
     // GitHub App Setup Routes
