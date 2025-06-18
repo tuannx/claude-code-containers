@@ -71,7 +71,7 @@ interface GitHubAppConfig {
 function logWithContext(context: string, message: string, data?: any): void {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${context}] ${message}`;
-  
+
   if (data) {
     console.log(logMessage, JSON.stringify(data, null, 2));
   } else {
@@ -82,7 +82,7 @@ function logWithContext(context: string, message: string, data?: any): void {
 // Encryption utilities
 async function encrypt(text: string, key?: CryptoKey): Promise<string> {
   logWithContext('ENCRYPTION', 'Starting encryption process');
-  
+
   if (!key) {
     logWithContext('ENCRYPTION', 'Generating encryption key from static material');
     // Generate a simple key from static data for now
@@ -117,7 +117,7 @@ async function encrypt(text: string, key?: CryptoKey): Promise<string> {
 
 async function decrypt(encryptedText: string, key?: CryptoKey): Promise<string> {
   logWithContext('DECRYPTION', 'Starting decryption process');
-  
+
   if (!key) {
     logWithContext('DECRYPTION', 'Generating decryption key from static material');
     // Generate the same key
@@ -154,7 +154,7 @@ async function decrypt(encryptedText: string, key?: CryptoKey): Promise<string> 
 // JWT token generation for GitHub App authentication
 async function generateAppJWT(appId: string, privateKey: string): Promise<string> {
   logWithContext('JWT', 'Generating App JWT token', { appId });
-  
+
   const now = Math.floor(Date.now() / 1000);
 
   const payload = {
@@ -164,10 +164,10 @@ async function generateAppJWT(appId: string, privateKey: string): Promise<string
   };
 
   logWithContext('JWT', 'JWT payload prepared', { payload });
-  
+
   // GitHub requires RS256 algorithm for App JWT tokens
   const token = await jwt.sign(payload, privateKey, { algorithm: 'RS256' });
-  
+
   logWithContext('JWT', 'App JWT token generated successfully');
   return token;
 }
@@ -182,7 +182,7 @@ async function generateInstallationToken(
     appId,
     installationId
   });
-  
+
   try {
     // First, generate App JWT
     const appJWT = await generateAppJWT(appId, privateKey);
@@ -191,7 +191,7 @@ async function generateInstallationToken(
     // Exchange for installation access token
     const apiUrl = `https://api.github.com/app/installations/${installationId}/access_tokens`;
     logWithContext('INSTALLATION_TOKEN', 'Calling GitHub API', { url: apiUrl });
-    
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -219,7 +219,7 @@ async function generateInstallationToken(
     logWithContext('INSTALLATION_TOKEN', 'Installation token generated successfully', {
       expires_at: tokenData.expires_at
     });
-    
+
     return tokenData;
   } catch (error) {
     logWithContext('INSTALLATION_TOKEN', 'Error generating installation token', {
@@ -239,7 +239,7 @@ class GitHubAPI {
 
   async makeAuthenticatedRequest(path: string, options: RequestInit = {}): Promise<Response> {
     logWithContext('GITHUB_API', 'Making authenticated request', { path, method: options.method || 'GET' });
-    
+
     const tokenResponse = await this.configDO.fetch(new Request('http://internal/get-installation-token'));
     const tokenData = await tokenResponse.json() as { token: string };
 
@@ -257,18 +257,18 @@ class GitHubAPI {
 
     const url = `https://api.github.com${path}`;
     logWithContext('GITHUB_API', 'Sending request to GitHub', { url, headers: Object.keys(headers) });
-    
+
     const response = await fetch(url, {
       ...options,
       headers
     });
-    
+
     logWithContext('GITHUB_API', 'GitHub API response', {
       status: response.status,
       statusText: response.statusText,
       path
     });
-    
+
     return response;
   }
 
@@ -325,38 +325,36 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
     method: request.method,
     origin
   });
-  
-  const url = new URL(request.url);
-  
+
   // Handle POST request to save API key
   if (request.method === 'POST') {
     logWithContext('CLAUDE_SETUP', 'Processing API key submission');
-    
+
     try {
       const formData = await request.formData();
       const apiKey = formData.get('anthropic_api_key') as string;
-      
+
       logWithContext('CLAUDE_SETUP', 'API key received', {
         hasApiKey: !!apiKey,
         keyPrefix: apiKey ? apiKey.substring(0, 7) + '...' : 'none'
       });
-      
+
       if (!apiKey || !apiKey.startsWith('sk-ant-')) {
         logWithContext('CLAUDE_SETUP', 'Invalid API key format provided');
         throw new Error('Invalid Anthropic API key format');
       }
-      
+
       // Store the API key securely in a deployment-specific Durable Object
       const deploymentId = 'claude-config'; // Single config per deployment
       logWithContext('CLAUDE_SETUP', 'Storing API key in Durable Object', { deploymentId });
-      
+
       const id = env.GITHUB_APP_CONFIG.idFromName(deploymentId);
       const configDO = env.GITHUB_APP_CONFIG.get(id);
-      
+
       // Encrypt the API key
       const encryptedApiKey = await encrypt(apiKey);
       logWithContext('CLAUDE_SETUP', 'API key encrypted successfully');
-      
+
       // Store in Durable Object
       const storeResponse = await configDO.fetch(new Request('http://internal/store-claude-key', {
         method: 'POST',
@@ -365,11 +363,11 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
           claudeSetupAt: new Date().toISOString()
         })
       }));
-      
+
       logWithContext('CLAUDE_SETUP', 'API key stored in Durable Object', {
         storeResponseStatus: storeResponse.status
       });
-      
+
       return new Response(`
 <!DOCTYPE html>
 <html>
@@ -401,22 +399,22 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
     <h1 class="success">✅ Claude Code API Key Configured!</h1>
     <p>Your Anthropic API key has been securely stored and encrypted.</p>
     <p>Claude Code is now ready to process GitHub issues automatically!</p>
-    
+
     <a href="/gh-setup" class="next-btn">
         📱 Setup GitHub Integration
     </a>
-    
+
     <p><small>Your API key is encrypted and stored securely in Cloudflare's Durable Objects.</small></p>
 </body>
 </html>`, {
         headers: { 'Content-Type': 'text/html' }
       });
-      
+
     } catch (error) {
       logWithContext('CLAUDE_SETUP', 'Error during Claude setup', {
         error: error instanceof Error ? error.message : String(error)
       });
-      
+
       return new Response(`
 <!DOCTYPE html>
 <html>
@@ -446,8 +444,8 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
 </head>
 <body>
     <h1 class="error">❌ Setup Error</h1>
-    <p>Error: ${error.message}</p>
-    
+    <p>Error: ${(error as Error).message}</p>
+
     <a href="/claude-setup" class="back-btn">
         ← Try Again
     </a>
@@ -458,7 +456,7 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
       });
     }
   }
-  
+
   // Show setup form
   const html = `
 <!DOCTYPE html>
@@ -592,29 +590,29 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
     <form method="POST" class="setup-form">
         <div class="form-group">
             <label for="anthropic_api_key">Anthropic API Key</label>
-            <input 
-                type="password" 
-                id="anthropic_api_key" 
-                name="anthropic_api_key" 
-                placeholder="sk-ant-api03-..." 
-                required 
+            <input
+                type="password"
+                id="anthropic_api_key"
+                name="anthropic_api_key"
+                placeholder="sk-ant-api03-..."
+                required
                 pattern="sk-ant-.*"
                 title="API key must start with 'sk-ant-'"
             >
         </div>
-        
+
         <button type="submit" class="submit-btn">
             🔐 Save API Key Securely
         </button>
     </form>
 
     <div class="security-note">
-        <strong>🔒 Security:</strong> Your API key is encrypted using AES-256-GCM before storage. 
+        <strong>🔒 Security:</strong> Your API key is encrypted using AES-256-GCM before storage.
         Only your worker deployment can decrypt and use it. It's never logged or exposed.
     </div>
 
     <p><strong>Already configured?</strong> <a href="/gh-setup">Continue to GitHub Setup →</a></p>
-    
+
     <hr style="margin: 40px 0;">
     <p style="text-align: center;"><a href="/">← Back to Home</a></p>
 </body>
@@ -627,11 +625,11 @@ async function handleClaudeSetup(request: Request, origin: string, env: any): Pr
 
 async function handleGitHubSetup(_request: Request, origin: string): Promise<Response> {
   logWithContext('GITHUB_SETUP', 'Handling GitHub setup request', { origin });
-  
+
   const webhookUrl = `${origin}/webhooks/github`;
   const manifest = generateAppManifest(origin);
   const manifestJson = JSON.stringify(manifest);
-  
+
   logWithContext('GITHUB_SETUP', 'Generated GitHub App manifest', {
     webhookUrl,
     appName: manifest.name
@@ -786,7 +784,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
     hasCode: !!url.searchParams.get('code'),
     origin: url.origin
   });
-  
+
   const code = url.searchParams.get('code');
 
   if (!code) {
@@ -797,7 +795,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
   try {
     // Exchange temporary code for app credentials
     logWithContext('OAUTH_CALLBACK', 'Exchanging code for app credentials', { code: code.substring(0, 8) + '...' });
-    
+
     const response = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
       method: 'POST',
       headers: {
@@ -829,11 +827,11 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
 
     // Store app credentials securely in Durable Object
     logWithContext('OAUTH_CALLBACK', 'Storing app credentials in Durable Object');
-    
+
     try {
       const encryptedPrivateKey = await encrypt(appData.pem);
       const encryptedWebhookSecret = await encrypt(appData.webhook_secret);
-      
+
       logWithContext('OAUTH_CALLBACK', 'App credentials encrypted successfully');
 
       const appConfig: GitHubAppConfig = {
@@ -943,7 +941,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
     logWithContext('OAUTH_CALLBACK', 'OAuth callback error', {
       error: error instanceof Error ? error.message : String(error)
     });
-    return new Response(`Setup failed: ${error}`, { status: 500 });
+    return new Response(`Setup failed: ${(error as Error).message}`, { status: 500 });
   }
 }
 
@@ -1092,7 +1090,7 @@ async function verifyGitHubSignature(payload: string, signature: string, secret:
 // Main webhook processing handler
 async function handleGitHubWebhook(request: Request, env: any): Promise<Response> {
   const startTime = Date.now();
-  
+
   try {
     // Get webhook payload and headers
     const payload = await request.text();
@@ -1137,6 +1135,21 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
       return new Response('Invalid JSON payload', { status: 400 });
     }
 
+    // Handle ping webhooks early - they don't need installation info or signature verification
+    if (event === 'ping') {
+      logWithContext('WEBHOOK', 'Received ping webhook', {
+        zen: webhookData.zen,
+        hookId: webhookData.hook_id
+      });
+      return new Response(JSON.stringify({
+        message: 'Webhook endpoint is active',
+        zen: webhookData.zen
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     // Determine which app config to use based on the webhook
     let appId: string | undefined;
 
@@ -1160,25 +1173,37 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
         return new Response('Cannot determine app ID', { status: 400 });
       }
     } else {
-      logWithContext('WEBHOOK', 'No installation information in webhook payload', {
-        webhookKeys: Object.keys(webhookData)
-      });
-      return new Response('No installation information', { status: 400 });
+      // Try to get app ID from headers as fallback
+      const hookInstallationTargetId = request.headers.get('x-github-hook-installation-target-id');
+      if (hookInstallationTargetId) {
+        appId = hookInstallationTargetId;
+        logWithContext('WEBHOOK', 'App ID found in header (fallback)', { appId });
+      } else {
+        logWithContext('WEBHOOK', 'No installation information in webhook payload', {
+          webhookKeys: Object.keys(webhookData),
+          event,
+          availableHeaders: {
+            hookInstallationTargetId: request.headers.get('x-github-hook-installation-target-id'),
+            hookInstallationTargetType: request.headers.get('x-github-hook-installation-target-type')
+          }
+        });
+        return new Response(`No installation information for event: ${event}`, { status: 400 });
+      }
     }
 
     // Get app configuration and decrypt webhook secret
     logWithContext('WEBHOOK', 'Retrieving app configuration', { appId });
-    
+
     const id = env.GITHUB_APP_CONFIG.idFromName(appId);
     const configDO = env.GITHUB_APP_CONFIG.get(id);
 
     const configResponse = await configDO.fetch(new Request('http://internal/get-credentials'));
-    
+
     logWithContext('WEBHOOK', 'Config DO response', {
       status: configResponse.status,
       appId
     });
-    
+
     if (!configResponse.ok) {
       logWithContext('WEBHOOK', 'No app configuration found', { appId });
       return new Response('App not configured', { status: 404 });
@@ -1193,16 +1218,16 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
       });
       return new Response('Webhook secret not found', { status: 500 });
     }
-    
+
     logWithContext('WEBHOOK', 'Webhook secret retrieved successfully');
 
     // Verify the webhook signature
     logWithContext('WEBHOOK', 'Verifying webhook signature');
-    
+
     const isValid = await verifyGitHubSignature(payload, signature, credentials.webhookSecret);
-    
+
     logWithContext('WEBHOOK', 'Signature verification result', { isValid });
-    
+
     if (!isValid) {
       logWithContext('WEBHOOK', 'Invalid webhook signature', {
         signaturePrefix: signature.substring(0, 15) + '...',
@@ -1219,9 +1244,9 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
 
     // Route to appropriate event handler
     logWithContext('WEBHOOK', 'Routing to event handler', { event });
-    
+
     const eventResponse = await routeWebhookEvent(event, webhookData, configDO, env);
-    
+
     const processingTime = Date.now() - startTime;
     logWithContext('WEBHOOK', 'Webhook processing completed', {
       event,
@@ -1229,7 +1254,7 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
       processingTimeMs: processingTime,
       responseStatus: eventResponse.status
     });
-    
+
     return eventResponse;
 
   } catch (error) {
@@ -1250,7 +1275,7 @@ async function routeWebhookEvent(event: string, data: any, configDO: any, env: a
     action: data.action,
     repository: data.repository?.full_name
   });
-  
+
   switch (event) {
     case 'installation':
       return handleInstallationEvent(data, configDO);
@@ -1300,7 +1325,7 @@ async function handleInstallationEvent(data: any, configDO: any): Promise<Respon
 
     logWithContext('INSTALLATION_EVENT', 'Updating installation configuration', {
       repositoryCount: repositories.length,
-      repositories: repoData.map(r => r.full_name)
+      repositories: repoData.map((r: any) => r.full_name)
     });
 
     const updateResponse = await configDO.fetch(new Request('http://internal/update-installation', {
@@ -1384,8 +1409,8 @@ async function handlePushEvent(data: any, env: any, configDO: any): Promise<Resp
   try {
     // Example: Get repository details with authenticated API call
     logWithContext('PUSH_EVENT', 'Fetching repository details');
-    const repoData = await githubAPI.getRepository(repository.owner.login, repository.name);
-    
+    const repoData = await githubAPI.getRepository(repository.owner.login, repository.name) as any;
+
     logWithContext('PUSH_EVENT', 'Repository details fetched', {
       stars: repoData.stargazers_count,
       language: repoData.language,
@@ -1400,7 +1425,7 @@ async function handlePushEvent(data: any, env: any, configDO: any): Promise<Resp
   // Wake up a container based on the repository
   const containerName = `repo-${repository.id}`;
   logWithContext('PUSH_EVENT', 'Waking up container', { containerName });
-  
+
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
 
@@ -1412,9 +1437,9 @@ async function handlePushEvent(data: any, env: any, configDO: any): Promise<Resp
     ref: data.ref,
     author: commits[0]?.author?.name || 'Unknown'
   };
-  
+
   logWithContext('PUSH_EVENT', 'Sending webhook to container', webhookPayload);
-  
+
   const containerResponse = await container.fetch(new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1451,7 +1476,7 @@ async function handlePullRequestEvent(data: any, env: any, configDO: any): Promi
       );
       console.log(`Commented on PR #${pullRequest.number}`);
     } catch (error) {
-      console.error('Failed to comment on PR:', error);
+      console.error('Failed to comment on PR:', (error as Error).message);
     }
   }
 
@@ -1497,24 +1522,24 @@ async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Re
   // Handle new issue creation with Claude Code
   if (action === 'opened') {
     logWithContext('ISSUES_EVENT', 'Handling new issue creation');
-    
+
     try {
       // Post initial acknowledgment comment
       logWithContext('ISSUES_EVENT', 'Posting initial acknowledgment comment');
-      
+
       await githubAPI.createComment(
         repository.owner.login,
         repository.name,
         issue.number,
         `🤖 **Claude Code Assistant**\n\nI've received this issue and I'm analyzing it now. I'll start working on a solution shortly!\n\n---\n🚀 Powered by Claude Code`
       );
-      
+
       logWithContext('ISSUES_EVENT', 'Initial comment posted successfully');
 
       // Route to Claude Code container for processing
       logWithContext('ISSUES_EVENT', 'Routing to Claude Code container');
       await routeToClaudeCodeContainer(issue, repository, env, configDO);
-      
+
       logWithContext('ISSUES_EVENT', 'Issue routed to Claude Code container successfully');
 
     } catch (error) {
@@ -1522,18 +1547,18 @@ async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Re
         error: error instanceof Error ? error.message : String(error),
         issueNumber: issue.number
       });
-      
+
       // Post error comment
       try {
         logWithContext('ISSUES_EVENT', 'Posting error comment to issue');
-        
+
         await githubAPI.createComment(
           repository.owner.login,
           repository.name,
           issue.number,
-          `❌ I encountered an error while setting up to work on this issue: ${error.message}\n\nI'll need human assistance to resolve this.`
+          `❌ I encountered an error while setting up to work on this issue: ${(error as Error).message}\n\nI'll need human assistance to resolve this.`
         );
-        
+
         logWithContext('ISSUES_EVENT', 'Error comment posted successfully');
       } catch (commentError) {
         logWithContext('ISSUES_EVENT', 'Failed to post error comment', {
@@ -1567,7 +1592,7 @@ async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Re
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
   const containerName = `claude-issue-${issue.id}`;
-  
+
   logWithContext('CLAUDE_ROUTING', 'Routing issue to Claude Code container', {
     issueNumber: issue.number,
     issueId: issue.id,
@@ -1581,17 +1606,17 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
 
   // Get installation token for GitHub API access
   logWithContext('CLAUDE_ROUTING', 'Retrieving installation token');
-  
+
   const tokenResponse = await configDO.fetch(new Request('http://internal/get-installation-token'));
   const tokenData = await tokenResponse.json() as { token: string };
-  
+
   logWithContext('CLAUDE_ROUTING', 'Installation token retrieved', {
     hasToken: !!tokenData.token
   });
 
   // Get Claude API key from secure storage
   logWithContext('CLAUDE_ROUTING', 'Retrieving Claude API key');
-  
+
   const claudeConfigId = env.GITHUB_APP_CONFIG.idFromName('claude-config');
   const claudeConfigDO = env.GITHUB_APP_CONFIG.get(claudeConfigId);
   const claudeKeyResponse = await claudeConfigDO.fetch(new Request('http://internal/get-claude-key'));
@@ -1626,11 +1651,11 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
     containerName,
     issueId: issueContext.ISSUE_ID
   });
-  
+
   try {
     const response = await container.fetch(new Request('http://internal/process-issue', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(issueContext)
@@ -1640,7 +1665,7 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
       status: response.status,
       statusText: response.statusText
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unable to read error response');
       logWithContext('CLAUDE_ROUTING', 'Container returned error', {
@@ -1649,7 +1674,7 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
       });
       throw new Error(`Container returned status ${response.status}: ${errorText}`);
     }
-    
+
     logWithContext('CLAUDE_ROUTING', 'Claude Code processing started successfully');
 
   } catch (error) {
@@ -1667,12 +1692,61 @@ export class GitHubAppConfigDO {
 
   constructor(state: DurableObjectState) {
     this.storage = state.storage;
-    logWithContext('DURABLE_OBJECT', 'GitHubAppConfigDO initialized');
+    this.initializeTables();
+    logWithContext('DURABLE_OBJECT', 'GitHubAppConfigDO initialized with SQLite');
+  }
+
+  private initializeTables(): void {
+    logWithContext('DURABLE_OBJECT', 'Initializing SQLite tables');
+
+    // Create github_app_config table
+    this.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS github_app_config (
+        id INTEGER PRIMARY KEY,
+        app_id TEXT NOT NULL,
+        private_key TEXT NOT NULL,
+        webhook_secret TEXT NOT NULL,
+        installation_id TEXT,
+        owner_login TEXT NOT NULL,
+        owner_type TEXT NOT NULL,
+        owner_id INTEGER NOT NULL,
+        permissions TEXT NOT NULL,
+        events TEXT NOT NULL,
+        repositories TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_webhook_at TEXT,
+        webhook_count INTEGER DEFAULT 0,
+        updated_at TEXT NOT NULL
+      )
+    `);
+
+    // Create installation_tokens table
+    this.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS installation_tokens (
+        id INTEGER PRIMARY KEY,
+        token TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+
+    // Create claude_config table
+    this.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS claude_config (
+        id INTEGER PRIMARY KEY,
+        anthropic_api_key TEXT NOT NULL,
+        claude_setup_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+
+    logWithContext('DURABLE_OBJECT', 'SQLite tables initialized successfully');
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    
+
     logWithContext('DURABLE_OBJECT', 'Processing request', {
       method: request.method,
       pathname: url.pathname
@@ -1680,80 +1754,80 @@ export class GitHubAppConfigDO {
 
     if (url.pathname === '/store' && request.method === 'POST') {
       logWithContext('DURABLE_OBJECT', 'Storing app config');
-      
+
       const config = await request.json() as GitHubAppConfig;
-      
+
       logWithContext('DURABLE_OBJECT', 'App config received', {
         appId: config.appId,
         repositoryCount: config.repositories.length,
         owner: config.owner.login
       });
-      
+
       await this.storeAppConfig(config);
-      
+
       logWithContext('DURABLE_OBJECT', 'App config stored successfully');
       return new Response('OK');
     }
 
     if (url.pathname === '/get' && request.method === 'GET') {
       logWithContext('DURABLE_OBJECT', 'Retrieving app config');
-      
+
       const config = await this.getAppConfig();
-      
+
       logWithContext('DURABLE_OBJECT', 'App config retrieved', {
         hasConfig: !!config,
         appId: config?.appId,
         repositoryCount: config?.repositories.length
       });
-      
+
       return new Response(JSON.stringify(config));
     }
 
     if (url.pathname === '/get-credentials' && request.method === 'GET') {
       logWithContext('DURABLE_OBJECT', 'Retrieving and decrypting credentials');
-      
+
       const credentials = await this.getDecryptedCredentials();
-      
+
       logWithContext('DURABLE_OBJECT', 'Credentials retrieved', {
         hasPrivateKey: !!credentials?.privateKey,
         hasWebhookSecret: !!credentials?.webhookSecret
       });
-      
+
       return new Response(JSON.stringify(credentials));
     }
 
     if (url.pathname === '/log-webhook' && request.method === 'POST') {
       const webhookData = await request.json() as { event: string; delivery: string; timestamp: string };
-      
+
       logWithContext('DURABLE_OBJECT', 'Logging webhook event', {
         event: webhookData.event,
         delivery: webhookData.delivery
       });
-      
+
       await this.logWebhook(webhookData.event);
       return new Response('OK');
     }
 
     if (url.pathname === '/update-installation' && request.method === 'POST') {
       const installationData = await request.json() as { installationId: string; repositories: Repository[]; owner: any };
-      
+
       logWithContext('DURABLE_OBJECT', 'Updating installation', {
         installationId: installationData.installationId,
         repositoryCount: installationData.repositories.length,
         owner: installationData.owner.login
       });
-      
+
       await this.updateInstallation(installationData.installationId, installationData.repositories);
-      
+
       // Also update owner information
       const config = await this.getAppConfig();
       if (config) {
         config.owner = installationData.owner;
         await this.storeAppConfig(config);
-        
+
         logWithContext('DURABLE_OBJECT', 'Installation updated successfully');
       }
-      
+
       return new Response('OK');
     }
 
@@ -1771,36 +1845,36 @@ export class GitHubAppConfigDO {
 
     if (url.pathname === '/get-installation-token' && request.method === 'GET') {
       logWithContext('DURABLE_OBJECT', 'Generating installation token');
-      
+
       const token = await this.getInstallationToken();
-      
+
       logWithContext('DURABLE_OBJECT', 'Installation token generated', {
         hasToken: !!token
       });
-      
+
       return new Response(JSON.stringify({ token }));
     }
 
     if (url.pathname === '/store-claude-key' && request.method === 'POST') {
       logWithContext('DURABLE_OBJECT', 'Storing Claude API key');
-      
+
       const claudeData = await request.json() as { anthropicApiKey: string; claudeSetupAt: string };
-      
+
       await this.storeClaudeApiKey(claudeData.anthropicApiKey, claudeData.claudeSetupAt);
-      
+
       logWithContext('DURABLE_OBJECT', 'Claude API key stored successfully');
       return new Response('OK');
     }
 
     if (url.pathname === '/get-claude-key' && request.method === 'GET') {
       logWithContext('DURABLE_OBJECT', 'Retrieving Claude API key');
-      
+
       const apiKey = await this.getDecryptedClaudeApiKey();
-      
+
       logWithContext('DURABLE_OBJECT', 'Claude API key retrieved', {
         hasApiKey: !!apiKey
       });
-      
+
       return new Response(JSON.stringify({ anthropicApiKey: apiKey }));
     }
 
@@ -1808,27 +1882,84 @@ export class GitHubAppConfigDO {
       method: request.method,
       pathname: url.pathname
     });
-    
+
     return new Response('Not Found', { status: 404 });
   }
 
   async storeAppConfig(config: GitHubAppConfig): Promise<void> {
-    logWithContext('DURABLE_OBJECT', 'Writing app config to storage', {
+    await this.storeAppConfigSQLite(config);
+  }
+
+  private async storeAppConfigSQLite(config: GitHubAppConfig): Promise<void> {
+    logWithContext('DURABLE_OBJECT', 'Writing app config to SQLite storage', {
       appId: config.appId,
       dataSize: JSON.stringify(config).length
     });
-    
-    await this.storage.put('github_app_config', config);
+
+    const now = new Date().toISOString();
+
+    this.storage.sql.exec(
+      `INSERT OR REPLACE INTO github_app_config (
+        id, app_id, private_key, webhook_secret, installation_id,
+        owner_login, owner_type, owner_id, permissions, events,
+        repositories, created_at, last_webhook_at, webhook_count, updated_at
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      config.appId,
+      config.privateKey,
+      config.webhookSecret,
+      config.installationId || null,
+      config.owner.login,
+      config.owner.type,
+      config.owner.id,
+      JSON.stringify(config.permissions),
+      JSON.stringify(config.events),
+      JSON.stringify(config.repositories),
+      config.createdAt,
+      config.lastWebhookAt || null,
+      config.webhookCount || 0,
+      now
+    );
+
+    logWithContext('DURABLE_OBJECT', 'App config stored successfully in SQLite');
   }
 
   async getAppConfig(): Promise<GitHubAppConfig | null> {
-    const config = await this.storage.get('github_app_config') || null;
-    
-    logWithContext('DURABLE_OBJECT', 'Read app config from storage', {
-      hasConfig: !!config,
-      appId: config?.appId
+    logWithContext('DURABLE_OBJECT', 'Reading app config from SQLite storage');
+
+    const cursor = this.storage.sql.exec('SELECT * FROM github_app_config WHERE id = 1 LIMIT 1');
+    const results = cursor.toArray();
+
+    if (results.length === 0) {
+      logWithContext('DURABLE_OBJECT', 'No app config found in SQLite storage');
+      return null;
+    }
+
+    const row = results[0];
+
+    const config: GitHubAppConfig = {
+      appId: row.app_id as string,
+      privateKey: row.private_key as string,
+      webhookSecret: row.webhook_secret as string,
+      installationId: row.installation_id as string || undefined,
+      owner: {
+        login: row.owner_login as string,
+        type: row.owner_type as "User" | "Organization",
+        id: row.owner_id as number
+      },
+      permissions: JSON.parse(row.permissions as string),
+      events: JSON.parse(row.events as string),
+      repositories: JSON.parse(row.repositories as string),
+      createdAt: row.created_at as string,
+      lastWebhookAt: row.last_webhook_at as string || undefined,
+      webhookCount: row.webhook_count as number || 0
+    };
+
+    logWithContext('DURABLE_OBJECT', 'App config retrieved from SQLite storage', {
+      hasConfig: true,
+      appId: config.appId,
+      repositoryCount: config.repositories.length
     });
-    
+
     return config;
   }
 
@@ -1879,10 +2010,10 @@ export class GitHubAppConfigDO {
 
     try {
       logWithContext('DURABLE_OBJECT', 'Decrypting credentials');
-      
+
       const privateKey = await decrypt(config.privateKey);
       const webhookSecret = await decrypt(config.webhookSecret);
-      
+
       logWithContext('DURABLE_OBJECT', 'Credentials decrypted successfully');
       return { privateKey, webhookSecret };
     } catch (error) {
@@ -1904,33 +2035,33 @@ export class GitHubAppConfigDO {
     }
 
     try {
-      // Check if we have a cached token that's still valid
-      const cachedToken = await this.storage.get('cached_installation_token') as { token: string; expires_at: string } | null;
-      
+      // Check if we have a cached token that's still valid in SQLite
+      const cachedToken = await this.getCachedInstallationToken();
+
       if (cachedToken) {
         const expiresAt = new Date(cachedToken.expires_at);
         const now = new Date();
         const timeUntilExpiry = expiresAt.getTime() - now.getTime();
-        
-        logWithContext('DURABLE_OBJECT', 'Checking cached token', {
+
+        logWithContext('DURABLE_OBJECT', 'Checking cached token from SQLite', {
           expiresAt: cachedToken.expires_at,
           timeUntilExpiryMs: timeUntilExpiry
         });
-        
+
         // Check if token expires in more than 5 minutes
         if (timeUntilExpiry > 5 * 60 * 1000) {
-          logWithContext('DURABLE_OBJECT', 'Using cached installation token');
+          logWithContext('DURABLE_OBJECT', 'Using cached installation token from SQLite');
           return cachedToken.token;
         } else {
           logWithContext('DURABLE_OBJECT', 'Cached token expired or expiring soon');
         }
       } else {
-        logWithContext('DURABLE_OBJECT', 'No cached token found');
+        logWithContext('DURABLE_OBJECT', 'No cached token found in SQLite');
       }
 
       // Generate new token
       logWithContext('DURABLE_OBJECT', 'Generating new installation token');
-      
+
       const credentials = await this.getDecryptedCredentials();
       if (!credentials) {
         logWithContext('DURABLE_OBJECT', 'Cannot generate token - missing credentials');
@@ -1944,12 +2075,12 @@ export class GitHubAppConfigDO {
       );
 
       if (tokenData) {
-        // Cache the token
-        logWithContext('DURABLE_OBJECT', 'Caching new installation token', {
+        // Cache the token in SQLite
+        logWithContext('DURABLE_OBJECT', 'Caching new installation token in SQLite', {
           expiresAt: tokenData.expires_at
         });
-        
-        await this.storage.put('cached_installation_token', tokenData);
+
+        await this.storeInstallationTokenSQLite(tokenData.token, tokenData.expires_at);
         return tokenData.token;
       }
 
@@ -1963,116 +2094,224 @@ export class GitHubAppConfigDO {
     }
   }
 
+  private async getCachedInstallationToken(): Promise<{ token: string; expires_at: string } | null> {
+    const cursor = this.storage.sql.exec('SELECT * FROM installation_tokens ORDER BY created_at DESC LIMIT 1');
+    const results = cursor.toArray();
+
+    if (results.length === 0) {
+      return null;
+    }
+
+    const row = results[0];
+    return {
+      token: row.token as string,
+      expires_at: row.expires_at as string
+    };
+  }
+
+  private async storeInstallationTokenSQLite(token: string, expiresAt: string): Promise<void> {
+    const now = new Date().toISOString();
+
+    // Clean up old tokens first
+    this.storage.sql.exec('DELETE FROM installation_tokens WHERE expires_at < ?', now);
+
+    // Store new token
+    this.storage.sql.exec(
+      'INSERT INTO installation_tokens (token, expires_at, created_at) VALUES (?, ?, ?)',
+      token,
+      expiresAt,
+      now
+    );
+  }
+
   // Claude Code API key management
   async storeClaudeApiKey(encryptedApiKey: string, setupTimestamp: string): Promise<void> {
-    // Store in a separate key for easier management
-    await this.storage.put('claude_config', {
-      anthropicApiKey: encryptedApiKey,
-      claudeSetupAt: setupTimestamp
-    });
+    await this.storeClaudeApiKeySQLite(encryptedApiKey, setupTimestamp);
+  }
+
+  private async storeClaudeApiKeySQLite(encryptedApiKey: string, setupTimestamp: string): Promise<void> {
+    const now = new Date().toISOString();
+
+    this.storage.sql.exec(
+      `INSERT OR REPLACE INTO claude_config (
+        id, anthropic_api_key, claude_setup_at, created_at, updated_at
+      ) VALUES (1, ?, ?, ?, ?)`,
+      encryptedApiKey,
+      setupTimestamp,
+      now,
+      now
+    );
   }
 
   async getDecryptedClaudeApiKey(): Promise<string | null> {
     try {
-      const claudeConfig = await this.storage.get('claude_config') as { anthropicApiKey: string; claudeSetupAt: string } | null;
-      
-      if (!claudeConfig) {
-        logWithContext('DURABLE_OBJECT', 'No Claude config found in storage');
+      const cursor = this.storage.sql.exec('SELECT * FROM claude_config WHERE id = 1 LIMIT 1');
+      const results = cursor.toArray();
+
+      if (results.length === 0) {
+        logWithContext('DURABLE_OBJECT', 'No Claude config found in SQLite storage');
         return null;
       }
 
-      logWithContext('DURABLE_OBJECT', 'Decrypting Claude API key', {
-        setupAt: claudeConfig.claudeSetupAt
+      const row = results[0];
+
+      logWithContext('DURABLE_OBJECT', 'Decrypting Claude API key from SQLite', {
+        setupAt: row.claude_setup_at
       });
-      
-      const decryptedKey = await decrypt(claudeConfig.anthropicApiKey);
-      
+
+      const decryptedKey = await decrypt(row.anthropic_api_key as string);
+
       logWithContext('DURABLE_OBJECT', 'Claude API key decrypted successfully');
       return decryptedKey;
     } catch (error) {
-      logWithContext('DURABLE_OBJECT', 'Failed to decrypt Claude API key', {
+      logWithContext('DURABLE_OBJECT', 'Failed to decrypt Claude API key from SQLite', {
         error: error instanceof Error ? error.message : String(error)
       });
       return null;
     }
+  }
+
+  // SQLite-specific enhancement methods
+  async getWebhookStats(): Promise<{ totalWebhooks: number; lastWebhookAt: string | null }> {
+    const cursor = this.storage.sql.exec(`
+      SELECT webhook_count, last_webhook_at
+      FROM github_app_config
+      WHERE id = 1
+      LIMIT 1
+    `);
+    const results = cursor.toArray();
+
+    if (results.length === 0) {
+      return { totalWebhooks: 0, lastWebhookAt: null };
+    }
+
+    const row = results[0];
+    return {
+      totalWebhooks: row.webhook_count as number || 0,
+      lastWebhookAt: row.last_webhook_at as string || null
+    };
+  }
+
+  async cleanupExpiredTokens(): Promise<number> {
+    const now = new Date().toISOString();
+    const cursor = this.storage.sql.exec(
+      'DELETE FROM installation_tokens WHERE expires_at < ?',
+      now
+    );
+
+    const deletedCount = cursor.rowsWritten || 0;
+    logWithContext('DURABLE_OBJECT', 'Cleaned up expired tokens', {
+      deletedCount,
+      timestamp: now
+    });
+
+    return deletedCount;
+  }
+
+  async getAllRepositories(): Promise<Repository[]> {
+    const config = await this.getAppConfig();
+    return config?.repositories || [];
+  }
+
+  async getInstallationStats(): Promise<{
+    appId: string | null;
+    repositoryCount: number;
+    hasClaudeConfig: boolean;
+    installationId: string | null;
+    createdAt: string | null;
+  }> {
+    const config = await this.getAppConfig();
+    const claudeCursor = this.storage.sql.exec('SELECT COUNT(*) as count FROM claude_config');
+    const claudeResults = claudeCursor.toArray();
+    const hasClaudeConfig = claudeResults.length > 0 && (claudeResults[0].count as number) > 0;
+
+    return {
+      appId: config?.appId || null,
+      repositoryCount: config?.repositories.length || 0,
+      hasClaudeConfig,
+      installationId: config?.installationId || null,
+      createdAt: config?.createdAt || null
+    };
   }
 }
 
 export class MyContainer extends Container {
   defaultPort = 8080;
   sleepAfter = '30m'; // Extended timeout for Claude Code processing
-  envVars = {
+  envVars: Record<string, string> = {
     MESSAGE: 'I was passed in via the container class!',
   };
 
   // Override fetch to handle environment variable setting for specific requests
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    
+
     logWithContext('CONTAINER', 'Container request received', {
       method: request.method,
       pathname: url.pathname,
       headers: Object.fromEntries(request.headers.entries())
     });
-    
+
     // Handle process-issue requests by setting environment variables
     if (url.pathname === '/process-issue' && request.method === 'POST') {
       logWithContext('CONTAINER', 'Processing issue request');
-      
+
       try {
-        const issueContext = await request.json();
-        
+        const issueContext = await request.json() as Record<string, any>;
+
         logWithContext('CONTAINER', 'Issue context received', {
           issueId: issueContext.ISSUE_ID,
           repository: issueContext.REPOSITORY_NAME,
           envVarCount: Object.keys(issueContext).length
         });
-        
+
         // Set environment variables for this container instance
         let envVarsSet = 0;
         Object.entries(issueContext).forEach(([key, value]) => {
           if (typeof value === 'string') {
-            process.env[key] = value;
+            this.envVars[key] = value;
             envVarsSet++;
           }
         });
-        
+
         logWithContext('CONTAINER', 'Environment variables set', {
           envVarsSet,
           totalEnvVars: Object.keys(issueContext).length
         });
+
+        logWithContext('CONTAINER', 'Forwarding request to container');
         
-        // Create a new request to forward to the container
-        const forwardRequest = new Request(request.url, {
-          method: 'GET', // Change to GET since the container expects this
-          headers: request.headers
+        // Create a new request with the JSON data to avoid ReadableStream being disturbed
+        const newRequest = new Request(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: JSON.stringify(issueContext)
         });
         
-        logWithContext('CONTAINER', 'Forwarding request to container');
-        const response = await super.fetch(forwardRequest);
-        
+        const response = await super.fetch(newRequest);
+
         logWithContext('CONTAINER', 'Container response received', {
           status: response.status,
           statusText: response.statusText
         });
-        
+
         return response;
       } catch (error) {
         logWithContext('CONTAINER', 'Error processing issue request', {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined
         });
-        
-        return new Response(JSON.stringify({ 
+
+        return new Response(JSON.stringify({
           error: 'Failed to process issue context',
-          message: (error as Error).message 
-        }), { 
+          message: (error as Error).message
+        }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
         });
       }
     }
-    
+
     // For all other requests, use default behavior
     logWithContext('CONTAINER', 'Using default container behavior');
     return super.fetch(request);
@@ -2105,7 +2344,7 @@ export default {
     const startTime = Date.now();
     const url = new URL(request.url);
     const pathname = url.pathname;
-    
+
     // Log all incoming requests
     logWithContext('MAIN_HANDLER', 'Incoming request', {
       method: request.method,
@@ -2205,7 +2444,7 @@ Setup Instructions:
 
 Container Testing Routes:
 - /container - Basic container health check
-- /lb - Load balancing over multiple containers  
+- /lb - Load balancing over multiple containers
 - /error - Test error handling
 - /singleton - Single container instance
 
@@ -2214,7 +2453,7 @@ Once both setups are complete, create GitHub issues to trigger automatic Claude 
       }
 
       const processingTime = Date.now() - startTime;
-      
+
       logWithContext('MAIN_HANDLER', 'Request completed successfully', {
         pathname,
         method: request.method,
@@ -2228,7 +2467,7 @@ Once both setups are complete, create GitHub issues to trigger automatic Claude 
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      
+
       logWithContext('MAIN_HANDLER', 'Request failed with error', {
         pathname,
         method: request.method,
