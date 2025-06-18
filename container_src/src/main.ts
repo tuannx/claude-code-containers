@@ -87,7 +87,7 @@ async function errorHandler(_req: http.IncomingMessage, _res: http.ServerRespons
   throw new Error('This is a test error from the container');
 }
 
-// Setup isolated workspace for issue processing
+// Setup isolated workspace for issue processing using GitHub API
 async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promise<string> {
   const workspaceDir = `/tmp/workspace/issue-${issueNumber}`;
 
@@ -102,27 +102,114 @@ async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promi
     await fs.mkdir(workspaceDir, { recursive: true });
     logWithContext('WORKSPACE', 'Workspace directory created');
 
-    // Clone repository
-    const git = simpleGit();
-    logWithContext('WORKSPACE', 'Starting repository clone', {
-      repositoryUrl,
-      targetDir: workspaceDir
+    // Extract owner and repo from URL
+    const urlMatch = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    if (!urlMatch) {
+      throw new Error('Invalid GitHub repository URL');
+    }
+
+    const owner = urlMatch[1];
+    const repo = urlMatch[2].replace('.git', '');
+
+    logWithContext('WORKSPACE', 'Parsed repository info', { owner, repo });
+
+    // Download repository content using GitHub API
+    const octokit = getGitHubClient();
+    if (!octokit) {
+      throw new Error('GitHub token not available');
+    }
+
+    const downloadStartTime = Date.now();
+
+    // Get the default branch
+    logWithContext('WORKSPACE', 'Getting repository metadata');
+    const repoInfo = await octokit.rest.repos.get({ owner, repo });
+    const defaultBranch = repoInfo.data.default_branch;
+
+    logWithContext('WORKSPACE', 'Repository metadata retrieved', {
+      defaultBranch,
+      isPrivate: repoInfo.data.private
     });
 
-    const cloneStartTime = Date.now();
-    await git.clone(repositoryUrl, workspaceDir);
-    const cloneTime = Date.now() - cloneStartTime;
-    
-    logWithContext('WORKSPACE', 'Repository cloned successfully', {
-      cloneTimeMs: cloneTime
+    // Download repository archive
+    logWithContext('WORKSPACE', 'Downloading repository archive');
+    const archiveResponse = await octokit.rest.repos.downloadZipballArchive({
+      owner,
+      repo,
+      ref: defaultBranch
     });
 
-    // Configure git for potential commits
-    const gitInWorkspace = simpleGit(workspaceDir);
-    await gitInWorkspace.addConfig('user.name', 'Claude Code Bot');
-    await gitInWorkspace.addConfig('user.email', 'claude-code@anthropic.com');
-    
-    logWithContext('WORKSPACE', 'Git configuration set');
+    // Save archive to temporary file
+    const archivePath = `/tmp/repo-${issueNumber}.zip`;
+    await fs.writeFile(archivePath, Buffer.from(archiveResponse.data as ArrayBuffer));
+
+    logWithContext('WORKSPACE', 'Archive downloaded and saved', {
+      archivePath,
+      sizeBytes: Buffer.from(archiveResponse.data as ArrayBuffer).length
+    });
+
+    // Extract archive using unzip command (assuming it's available in container)
+    const { spawn } = require('child_process');
+    await new Promise<void>((resolve, reject) => {
+      const unzipProcess = spawn('unzip', ['-q', archivePath, '-d', workspaceDir], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stderr = '';
+      unzipProcess.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      unzipProcess.on('close', (code: number) => {
+        if (code === 0) {
+          logWithContext('WORKSPACE', 'Archive extracted successfully');
+          resolve();
+        } else {
+          logWithContext('WORKSPACE', 'Archive extraction failed', {
+            code,
+            stderr
+          });
+          reject(new Error(`Unzip failed with code ${code}: ${stderr}`));
+        }
+      });
+    });
+
+    // Find the extracted directory (GitHub creates a directory with commit hash)
+    const entries = await fs.readdir(workspaceDir);
+    const extractedDir = entries.find(entry => entry.startsWith(`${owner}-${repo}-`));
+
+    if (!extractedDir) {
+      throw new Error('Could not find extracted repository directory');
+    }
+
+    const extractedPath = path.join(workspaceDir, extractedDir);
+
+    // Move contents to workspace root
+    const contentEntries = await fs.readdir(extractedPath);
+    for (const entry of contentEntries) {
+      const srcPath = path.join(extractedPath, entry);
+      const destPath = path.join(workspaceDir, entry);
+      await fs.rename(srcPath, destPath);
+    }
+
+    // Remove the now-empty extracted directory and archive
+    await fs.rmdir(extractedPath);
+    await fs.unlink(archivePath);
+
+    const downloadTime = Date.now() - downloadStartTime;
+
+    logWithContext('WORKSPACE', 'Repository downloaded and extracted successfully', {
+      downloadTimeMs: downloadTime,
+      filesExtracted: contentEntries.length
+    });
+
+    // Initialize git in the workspace for potential commits
+    const git = simpleGit(workspaceDir);
+    await git.init();
+    await git.addConfig('user.name', 'Claude Code Bot');
+    await git.addConfig('user.email', 'claude-code@anthropic.com');
+
+    logWithContext('WORKSPACE', 'Git repository initialized');
 
     return workspaceDir;
   } catch (error) {
