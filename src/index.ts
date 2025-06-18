@@ -547,6 +547,285 @@ async function handleGitHubStatus(_request: Request, env: any): Promise<Response
   }
 }
 
+// HMAC-SHA256 signature verification for GitHub webhooks
+async function verifyGitHubSignature(payload: string, signature: string, secret: string): Promise<boolean> {
+  if (!signature || !signature.startsWith('sha256=')) {
+    return false;
+  }
+
+  const sigHex = signature.replace('sha256=', '');
+  
+  // Create HMAC-SHA256 hash
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const messageBuffer = new TextEncoder().encode(payload);
+  const hashBuffer = await crypto.subtle.sign('HMAC', key, messageBuffer);
+  const hashArray = new Uint8Array(hashBuffer);
+  const computedHex = Array.from(hashArray)
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+
+  // Constant-time comparison
+  return sigHex === computedHex;
+}
+
+// Main webhook processing handler
+async function handleGitHubWebhook(request: Request, env: any): Promise<Response> {
+  try {
+    // Get webhook payload and headers
+    const payload = await request.text();
+    const signature = request.headers.get('x-hub-signature-256');
+    const event = request.headers.get('x-github-event');
+    const delivery = request.headers.get('x-github-delivery');
+
+    if (!signature || !event || !delivery) {
+      console.log('Missing required webhook headers');
+      return new Response('Missing required headers', { status: 400 });
+    }
+
+    // Parse the payload to get app/installation info
+    let webhookData;
+    try {
+      webhookData = JSON.parse(payload);
+    } catch (error) {
+      console.log('Invalid JSON payload:', error);
+      return new Response('Invalid JSON payload', { status: 400 });
+    }
+
+    // Determine which app config to use based on the webhook
+    let appId: string | undefined;
+    
+    if (webhookData.installation?.app_id) {
+      appId = webhookData.installation.app_id.toString();
+    } else {
+      console.log('Cannot determine app ID from webhook payload');
+      return new Response('Cannot determine app ID', { status: 400 });
+    }
+
+    // Get app configuration and decrypt webhook secret
+    const id = env.GITHUB_APP_CONFIG.idFromName(appId);
+    const configDO = env.GITHUB_APP_CONFIG.get(id);
+    
+    const configResponse = await configDO.fetch(new Request('http://internal/get-credentials'));
+    if (!configResponse.ok) {
+      console.log('No app configuration found for app ID:', appId);
+      return new Response('App not configured', { status: 404 });
+    }
+
+    const credentials = await configResponse.json();
+    if (!credentials || !credentials.webhookSecret) {
+      console.log('No webhook secret found for app ID:', appId);
+      return new Response('Webhook secret not found', { status: 500 });
+    }
+
+    // Verify the webhook signature
+    const isValid = await verifyGitHubSignature(payload, signature, credentials.webhookSecret);
+    if (!isValid) {
+      console.log('Invalid webhook signature');
+      return new Response('Invalid signature', { status: 401 });
+    }
+
+    // Log successful webhook delivery
+    await configDO.fetch(new Request('http://internal/log-webhook', {
+      method: 'POST',
+      body: JSON.stringify({ event, delivery, timestamp: new Date().toISOString() })
+    }));
+
+    // Route to appropriate event handler
+    const eventResponse = await routeWebhookEvent(event, webhookData, configDO, env);
+    
+    console.log(`Successfully processed ${event} webhook (delivery: ${delivery})`);
+    return eventResponse;
+
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    return new Response('Internal server error', { status: 500 });
+  }
+}
+
+// Route webhook events to specific handlers
+async function routeWebhookEvent(event: string, data: any, configDO: any, env: any): Promise<Response> {
+  switch (event) {
+    case 'installation':
+      return handleInstallationEvent(data, configDO);
+    
+    case 'installation_repositories':
+      return handleInstallationRepositoriesEvent(data, configDO);
+    
+    case 'push':
+      return handlePushEvent(data, env);
+    
+    case 'pull_request':
+      return handlePullRequestEvent(data, env);
+    
+    case 'issues':
+      return handleIssuesEvent(data, env);
+    
+    default:
+      console.log(`Unhandled webhook event: ${event}`);
+      return new Response('Event acknowledged', { status: 200 });
+  }
+}
+
+// Handle installation events (app installed/uninstalled)
+async function handleInstallationEvent(data: any, configDO: any): Promise<Response> {
+  const action = data.action;
+  const installation = data.installation;
+  
+  if (action === 'created') {
+    // App was installed - update configuration with installation details
+    const repositories = data.repositories || [];
+    const repoData = repositories.map((repo: any) => ({
+      id: repo.id,
+      name: repo.name,
+      full_name: repo.full_name,
+      private: repo.private
+    }));
+
+    await configDO.fetch(new Request('http://internal/update-installation', {
+      method: 'POST',
+      body: JSON.stringify({
+        installationId: installation.id.toString(),
+        repositories: repoData,
+        owner: {
+          login: installation.account.login,
+          type: installation.account.type,
+          id: installation.account.id
+        }
+      })
+    }));
+
+    console.log(`App installed on ${repositories.length} repositories`);
+  } else if (action === 'deleted') {
+    // App was uninstalled - could clean up or mark as inactive
+    console.log('App installation removed');
+  }
+
+  return new Response('Installation event processed', { status: 200 });
+}
+
+// Handle repository changes (repos added/removed from installation)
+async function handleInstallationRepositoriesEvent(data: any, configDO: any): Promise<Response> {
+  const action = data.action;
+  
+  if (action === 'added') {
+    const addedRepos = data.repositories_added || [];
+    for (const repo of addedRepos) {
+      await configDO.fetch(new Request('http://internal/add-repository', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: repo.id,
+          name: repo.name,
+          full_name: repo.full_name,
+          private: repo.private
+        })
+      }));
+    }
+    console.log(`Added ${addedRepos.length} repositories`);
+  } else if (action === 'removed') {
+    const removedRepos = data.repositories_removed || [];
+    for (const repo of removedRepos) {
+      await configDO.fetch(new Request(`http://internal/remove-repository/${repo.id}`, {
+        method: 'DELETE'
+      }));
+    }
+    console.log(`Removed ${removedRepos.length} repositories`);
+  }
+
+  return new Response('Repository changes processed', { status: 200 });
+}
+
+// Handle push events
+async function handlePushEvent(data: any, env: any): Promise<Response> {
+  const repository = data.repository;
+  const commits = data.commits || [];
+  
+  console.log(`Push event: ${commits.length} commits to ${repository.full_name}`);
+  
+  // Example: Wake up a container based on the repository
+  const containerName = `repo-${repository.id}`;
+  const id = env.MY_CONTAINER.idFromName(containerName);
+  const container = env.MY_CONTAINER.get(id);
+  
+  // You could pass webhook data to the container
+  const containerResponse = await container.fetch(new Request('http://internal/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event: 'push',
+      repository: repository.full_name,
+      commits: commits.length,
+      ref: data.ref
+    })
+  }));
+  
+  console.log(`Container response status: ${containerResponse.status}`);
+  
+  return new Response('Push event processed', { status: 200 });
+}
+
+// Handle pull request events
+async function handlePullRequestEvent(data: any, env: any): Promise<Response> {
+  const action = data.action;
+  const pullRequest = data.pull_request;
+  const repository = data.repository;
+  
+  console.log(`Pull request ${action}: #${pullRequest.number} in ${repository.full_name}`);
+  
+  // Example: Different actions could trigger different container behaviors
+  const containerName = `repo-${repository.id}`;
+  const id = env.MY_CONTAINER.idFromName(containerName);
+  const container = env.MY_CONTAINER.get(id);
+  
+  await container.fetch(new Request('http://internal/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event: 'pull_request',
+      action,
+      repository: repository.full_name,
+      pr_number: pullRequest.number,
+      pr_title: pullRequest.title
+    })
+  }));
+  
+  return new Response('Pull request event processed', { status: 200 });
+}
+
+// Handle issues events
+async function handleIssuesEvent(data: any, env: any): Promise<Response> {
+  const action = data.action;
+  const issue = data.issue;
+  const repository = data.repository;
+  
+  console.log(`Issue ${action}: #${issue.number} in ${repository.full_name}`);
+  
+  // Example: Process issue events
+  const containerName = `repo-${repository.id}`;
+  const id = env.MY_CONTAINER.idFromName(containerName);
+  const container = env.MY_CONTAINER.get(id);
+  
+  await container.fetch(new Request('http://internal/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      event: 'issues',
+      action,
+      repository: repository.full_name,
+      issue_number: issue.number,
+      issue_title: issue.title
+    })
+  }));
+  
+  return new Response('Issues event processed', { status: 200 });
+}
+
 export class GitHubAppConfigDO {
   private storage: DurableObjectStorage;
 
@@ -566,6 +845,45 @@ export class GitHubAppConfigDO {
     if (url.pathname === '/get' && request.method === 'GET') {
       const config = await this.getAppConfig();
       return new Response(JSON.stringify(config));
+    }
+    
+    if (url.pathname === '/get-credentials' && request.method === 'GET') {
+      const credentials = await this.getDecryptedCredentials();
+      return new Response(JSON.stringify(credentials));
+    }
+    
+    if (url.pathname === '/log-webhook' && request.method === 'POST') {
+      const body = await request.json() as { event: string; delivery: string; timestamp: string };
+      await this.logWebhook(body.event);
+      return new Response('OK');
+    }
+    
+    if (url.pathname === '/update-installation' && request.method === 'POST') {
+      const body = await request.json() as { 
+        installationId: string; 
+        repositories: Repository[]; 
+        owner: { login: string; type: "User" | "Organization"; id: number }
+      };
+      await this.updateInstallation(body.installationId, body.repositories);
+      // Also update owner information
+      const config = await this.getAppConfig();
+      if (config) {
+        config.owner = body.owner;
+        await this.storeAppConfig(config);
+      }
+      return new Response('OK');
+    }
+    
+    if (url.pathname === '/add-repository' && request.method === 'POST') {
+      const repo = await request.json() as Repository;
+      await this.addRepository(repo);
+      return new Response('OK');
+    }
+    
+    if (url.pathname.startsWith('/remove-repository/') && request.method === 'DELETE') {
+      const repoId = parseInt(url.pathname.split('/').pop() || '0');
+      await this.removeRepository(repoId);
+      return new Response('OK');
     }
     
     return new Response('Not Found', { status: 404 });
@@ -676,6 +994,11 @@ export default {
     // Status endpoint to check stored configurations
     if (pathname === '/gh-status') {
       return handleGitHubStatus(request, env);
+    }
+
+    // GitHub webhook endpoint
+    if (pathname === '/webhooks/github') {
+      return handleGitHubWebhook(request, env);
     }
 
     // To route requests to a specific container,
