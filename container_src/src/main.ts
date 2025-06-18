@@ -268,15 +268,43 @@ async function processFinalResults(issueContext: IssueContext, results: ClaudeMe
 
 // Main issue processing handler
 async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  log(`🎯 [APP] Process issue handler called`);
+
+  // Log all environment variables we're expecting
+  log(`🔍 [APP] Environment variables check:`);
+  log(`   - ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? 'Set' : 'Missing'}`);
+  log(`   - GITHUB_TOKEN: ${GITHUB_TOKEN ? 'Set' : 'Missing'}`);
+  log(`   - ISSUE_ID: ${ISSUE_ID || 'Missing'}`);
+  log(`   - ISSUE_NUMBER: ${ISSUE_NUMBER || 'Missing'}`);
+  log(`   - ISSUE_TITLE: ${ISSUE_TITLE || 'Missing'}`);
+  log(`   - REPOSITORY_URL: ${REPOSITORY_URL || 'Missing'}`);
+  log(`   - REPOSITORY_NAME: ${REPOSITORY_NAME || 'Missing'}`);
+  log(`   - ISSUE_AUTHOR: ${ISSUE_AUTHOR || 'Missing'}`);
+
   if (!ANTHROPIC_API_KEY) {
+    log(`❌ [APP] ANTHROPIC_API_KEY not provided`);
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'ANTHROPIC_API_KEY not provided' }));
+    res.end(JSON.stringify({
+      error: 'ANTHROPIC_API_KEY not provided',
+      debug: 'Environment variable ANTHROPIC_API_KEY is missing or empty'
+    }));
     return;
   }
 
   if (!ISSUE_ID || !REPOSITORY_URL) {
+    log(`❌ [APP] Missing required issue context - ISSUE_ID: ${!!ISSUE_ID}, REPOSITORY_URL: ${!!REPOSITORY_URL}`);
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Issue context not provided' }));
+    res.end(JSON.stringify({
+      error: 'Issue context not provided',
+      debug: {
+        ISSUE_ID: !!ISSUE_ID,
+        REPOSITORY_URL: !!REPOSITORY_URL,
+        missing: [
+          !ISSUE_ID && 'ISSUE_ID',
+          !REPOSITORY_URL && 'REPOSITORY_URL'
+        ].filter(Boolean)
+      }
+    }));
     return;
   }
 
@@ -291,18 +319,34 @@ async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerR
     author: ISSUE_AUTHOR!
   };
 
+  log(`✅ [APP] Issue context created successfully:`, {
+    issueId: issueContext.issueId,
+    issueNumber: issueContext.issueNumber,
+    repositoryName: issueContext.repositoryName,
+    author: issueContext.author,
+    labelsCount: issueContext.labels.length
+  });
+
   // Start processing asynchronously
+  log(`🚀 [APP] Starting async issue processing...`);
   processIssue(issueContext).catch(error => {
-    log('Async issue processing failed:', error);
+    log('❌ [APP] Async issue processing failed:', error);
   });
 
   // Return immediate response
+  log(`✅ [APP] Returning success response to caller`);
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'processing',
     message: 'Issue processing started',
     issueNumber: ISSUE_NUMBER,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    debug: {
+      hasClaudeKey: !!ANTHROPIC_API_KEY,
+      hasGitHubToken: !!GITHUB_TOKEN,
+      issueId: ISSUE_ID,
+      repositoryUrl: REPOSITORY_URL
+    }
   }));
 }
 
@@ -310,25 +354,35 @@ async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerR
 async function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const { method, url } = req;
 
-  log(`${method} ${url}`);
+  log(`🌐 [APP] Incoming request: ${method} ${url}`);
+  log(`🌐 [APP] Request headers:`, req.headers);
 
   try {
     if (url === '/' || url === '/container') {
+      log(`🏥 [APP] Routing to health handler`);
       await healthHandler(req, res);
     } else if (url === '/error') {
+      log(`💥 [APP] Routing to error handler`);
       await errorHandler(req, res);
     } else if (url === '/process-issue') {
+      log(`📋 [APP] Routing to process-issue handler`);
       await processIssueHandler(req, res);
     } else {
+      log(`❓ [APP] Unknown route requested: ${url}`);
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
+      res.end(JSON.stringify({
+        error: 'Not found',
+        path: url,
+        availablePaths: ['/', '/container', '/error', '/process-issue']
+      }));
     }
   } catch (error) {
-    log('Request handler error:', error);
+    log('❌ [APP] Request handler error:', error);
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'Internal server error',
-      message: (error as Error).message
+      message: (error as Error).message,
+      stack: (error as Error).stack
     }));
   }
 }
