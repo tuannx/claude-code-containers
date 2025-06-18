@@ -1307,7 +1307,8 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
   const tokenData = await tokenResponse.json() as { token: string };
 
   // Get Claude API key from secure storage
-  const claudeConfigDO = env.GITHUB_APP_CONFIG.get(env.GITHUB_APP_CONFIG.idFromName('claude-config'));
+  const claudeConfigId = env.GITHUB_APP_CONFIG.idFromName('claude-config');
+  const claudeConfigDO = env.GITHUB_APP_CONFIG.get(claudeConfigId);
   const claudeKeyResponse = await claudeConfigDO.fetch(new Request('http://internal/get-claude-key'));
   const claudeKeyData = await claudeKeyResponse.json() as { anthropicApiKey: string | null };
 
