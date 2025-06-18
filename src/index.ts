@@ -1331,20 +1331,9 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
     MESSAGE: `Processing issue #${issue.number}: ${issue.title}`
   };
 
-  // Create container with Claude Code environment variables
-  const claudeContainer = new MyContainer();
-  claudeContainer.envVars = {
-    ...claudeContainer.envVars,
-    ...issueContext
-  };
-
-  // Get container instance for Claude Code processing
-  const claudeId = env.MY_CONTAINER.idFromName(containerName);
-  const claudeInstance = env.MY_CONTAINER.get(claudeId);
-
-  // Start Claude Code processing by sending the issue context
+  // Start Claude Code processing by calling the container
   try {
-    const response = await claudeInstance.fetch(new Request('http://internal/process-issue', {
+    const response = await container.fetch(new Request('http://internal/process-issue', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json'
@@ -1568,6 +1557,47 @@ export class MyContainer extends Container {
   envVars = {
     MESSAGE: 'I was passed in via the container class!',
   };
+
+  // Override fetch to handle environment variable setting for specific requests
+  override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    
+    // Handle process-issue requests by setting environment variables
+    if (url.pathname === '/process-issue' && request.method === 'POST') {
+      try {
+        const issueContext = await request.json();
+        
+        // Set environment variables for this container instance
+        Object.entries(issueContext).forEach(([key, value]) => {
+          if (typeof value === 'string') {
+            process.env[key] = value;
+          }
+        });
+        
+        console.log('Environment variables set for Claude Code processing');
+        
+        // Create a new request to forward to the container
+        const forwardRequest = new Request(request.url, {
+          method: 'GET', // Change to GET since the container expects this
+          headers: request.headers
+        });
+        
+        return super.fetch(forwardRequest);
+      } catch (error) {
+        console.error('Error setting environment variables:', error);
+        return new Response(JSON.stringify({ 
+          error: 'Failed to process issue context',
+          message: (error as Error).message 
+        }), { 
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    // For all other requests, use default behavior
+    return super.fetch(request);
+  }
 
   override onStart() {
     console.log('Container successfully started');
