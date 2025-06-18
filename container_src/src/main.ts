@@ -49,14 +49,27 @@ type ClaudeMessage = SDKMessage;
 // Initialize GitHub client
 const octokit = GITHUB_TOKEN ? new Octokit({ auth: GITHUB_TOKEN }) : null;
 
-// Logging utility
-function log(message: string, data: any = null): void {
+// Enhanced logging utility with context
+function logWithContext(context: string, message: string, data?: any): void {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${message}`, data || '');
+  const logMessage = `[${timestamp}] [${context}] ${message}`;
+  
+  if (data) {
+    console.log(logMessage, JSON.stringify(data, null, 2));
+  } else {
+    console.log(logMessage);
+  }
+}
+
+// Legacy log function for backward compatibility
+function log(message: string, data: any = null): void {
+  logWithContext('CONTAINER', message, data);
 }
 
 // Basic health check handler
 async function healthHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  logWithContext('HEALTH', 'Health check requested');
+  
   const response: HealthStatus = {
     status: 'healthy',
     message: MESSAGE,
@@ -65,6 +78,13 @@ async function healthHandler(_req: http.IncomingMessage, res: http.ServerRespons
     claudeCodeAvailable: !!ANTHROPIC_API_KEY,
     githubTokenAvailable: !!GITHUB_TOKEN
   };
+
+  logWithContext('HEALTH', 'Health check response', {
+    status: response.status,
+    claudeCodeAvailable: response.claudeCodeAvailable,
+    githubTokenAvailable: response.githubTokenAvailable,
+    instanceId: response.instanceId
+  });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(response));
@@ -79,27 +99,47 @@ async function errorHandler(_req: http.IncomingMessage, _res: http.ServerRespons
 async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promise<string> {
   const workspaceDir = `/tmp/workspace/issue-${issueNumber}`;
 
-  log(`Setting up workspace: ${workspaceDir}`);
-
-  // Create workspace directory
-  await fs.mkdir(workspaceDir, { recursive: true });
-
-  // Clone repository
-  const git = simpleGit();
-  log(`Cloning repository: ${repositoryUrl}`);
+  logWithContext('WORKSPACE', 'Setting up workspace', {
+    workspaceDir,
+    repositoryUrl,
+    issueNumber
+  });
 
   try {
+    // Create workspace directory
+    await fs.mkdir(workspaceDir, { recursive: true });
+    logWithContext('WORKSPACE', 'Workspace directory created');
+
+    // Clone repository
+    const git = simpleGit();
+    logWithContext('WORKSPACE', 'Starting repository clone', {
+      repositoryUrl,
+      targetDir: workspaceDir
+    });
+
+    const cloneStartTime = Date.now();
     await git.clone(repositoryUrl, workspaceDir);
-    log('Repository cloned successfully');
+    const cloneTime = Date.now() - cloneStartTime;
+    
+    logWithContext('WORKSPACE', 'Repository cloned successfully', {
+      cloneTimeMs: cloneTime
+    });
 
     // Configure git for potential commits
     const gitInWorkspace = simpleGit(workspaceDir);
     await gitInWorkspace.addConfig('user.name', 'Claude Code Bot');
     await gitInWorkspace.addConfig('user.email', 'claude-code@anthropic.com');
+    
+    logWithContext('WORKSPACE', 'Git configuration set');
 
     return workspaceDir;
   } catch (error) {
-    log('Error cloning repository:', (error as Error).message);
+    logWithContext('WORKSPACE', 'Error setting up workspace', {
+      error: (error as Error).message,
+      stack: (error as Error).stack,
+      repositoryUrl,
+      workspaceDir
+    });
     throw error;
   }
 }
@@ -129,33 +169,64 @@ Work step by step and provide clear explanations of your approach.
 // Post progress comment to GitHub
 async function postProgressComment(repositoryName: string, issueNumber: string, message: string): Promise<void> {
   if (!octokit) {
-    log('GitHub token not available, skipping comment');
+    logWithContext('GITHUB_COMMENT', 'GitHub token not available, skipping comment');
     return;
   }
 
   try {
     const [owner, repo] = repositoryName.split('/');
-    await octokit.rest.issues.createComment({
+    
+    logWithContext('GITHUB_COMMENT', 'Posting progress comment', {
+      owner,
+      repo,
+      issueNumber,
+      messageLength: message.length
+    });
+    
+    const response = await octokit.rest.issues.createComment({
       owner,
       repo,
       issue_number: parseInt(issueNumber),
       body: `🤖 **Claude Code Progress Update**\n\n${message}`
     });
-    log('Posted progress comment to GitHub');
+    
+    logWithContext('GITHUB_COMMENT', 'Progress comment posted successfully', {
+      commentId: response.data.id,
+      commentUrl: response.data.html_url
+    });
   } catch (error) {
-    log('Error posting progress comment:', (error as Error).message);
+    logWithContext('GITHUB_COMMENT', 'Error posting progress comment', {
+      error: (error as Error).message,
+      repositoryName,
+      issueNumber
+    });
   }
 }
 
 // Process issue with Claude Code
 async function processIssue(issueContext: IssueContext): Promise<void> {
-  log('Starting issue processing', issueContext);
+  const startTime = Date.now();
+  
+  logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
+    issueId: issueContext.issueId,
+    issueNumber: issueContext.issueNumber,
+    repository: issueContext.repositoryName,
+    title: issueContext.title,
+    author: issueContext.author,
+    labels: issueContext.labels
+  });
 
   try {
     // 1. Setup workspace and clone repository
+    logWithContext('ISSUE_PROCESSOR', 'Setting up workspace');
     const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
+    
+    logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
+      workspaceDir
+    });
 
     // 2. Post initial progress comment
+    logWithContext('ISSUE_PROCESSOR', 'Posting initial progress comment');
     await postProgressComment(
       issueContext.repositoryName,
       issueContext.issueNumber,
@@ -164,17 +235,27 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
 
     // 3. Prepare prompt for Claude Code
     const prompt = prepareClaudePrompt(issueContext);
+    logWithContext('ISSUE_PROCESSOR', 'Claude prompt prepared', {
+      promptLength: prompt.length
+    });
 
     // 4. Run Claude Code
-    log('Starting Claude Code execution');
+    logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code execution');
     const results: ClaudeMessage[] = [];
     let turnCount = 0;
 
     // Set working directory by changing process directory
     const originalCwd = process.cwd();
+    logWithContext('ISSUE_PROCESSOR', 'Changing working directory', {
+      from: originalCwd,
+      to: workspaceDir
+    });
+    
     process.chdir(workspaceDir);
 
     try {
+      const claudeStartTime = Date.now();
+      
       for await (const message of query({
         prompt,
         options: {
@@ -185,14 +266,22 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         results.push(message);
 
         // Log message details (message structure depends on SDK version)
-        log(`Claude Code turn ${turnCount}:`, {
+        logWithContext('CLAUDE_CODE', `Turn ${turnCount} completed`, {
           type: message.type,
-          messagePreview: JSON.stringify(message).substring(0, 200) + '...'
+          messagePreview: JSON.stringify(message).substring(0, 200) + '...',
+          turnCount,
+          totalTurns: 5
         });
 
         // Stream progress back to GitHub for assistant messages
         if (message.type === 'assistant' && turnCount % 2 === 0) {
           const messageText = getMessageText(message);
+          
+          logWithContext('CLAUDE_CODE', 'Posting progress update to GitHub', {
+            turnCount,
+            messageLength: messageText.length
+          });
+          
           await postProgressComment(
             issueContext.repositoryName,
             issueContext.issueNumber,
@@ -200,25 +289,58 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
           );
         }
       }
+      
+      const claudeTime = Date.now() - claudeStartTime;
+      logWithContext('CLAUDE_CODE', 'Claude Code execution completed', {
+        totalTurns: turnCount,
+        executionTimeMs: claudeTime,
+        resultsCount: results.length
+      });
+      
     } finally {
       // Restore original working directory
+      logWithContext('ISSUE_PROCESSOR', 'Restoring original working directory', {
+        restoringTo: originalCwd
+      });
       process.chdir(originalCwd);
     }
 
     // 5. Process final results
+    logWithContext('ISSUE_PROCESSOR', 'Processing final results');
     await processFinalResults(issueContext, results);
 
-    log('Issue processing completed successfully');
+    const totalTime = Date.now() - startTime;
+    logWithContext('ISSUE_PROCESSOR', 'Issue processing completed successfully', {
+      totalProcessingTimeMs: totalTime,
+      totalTurns: turnCount
+    });
 
   } catch (error) {
-    log('Error processing issue:', error);
+    const totalTime = Date.now() - startTime;
+    
+    logWithContext('ISSUE_PROCESSOR', 'Error processing issue', {
+      error: (error as Error).message,
+      stack: (error as Error).stack,
+      issueId: issueContext.issueId,
+      processingTimeMs: totalTime
+    });
 
     // Post error comment to GitHub
-    await postProgressComment(
-      issueContext.repositoryName,
-      issueContext.issueNumber,
-      `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
-    );
+    try {
+      logWithContext('ISSUE_PROCESSOR', 'Posting error comment to GitHub');
+      
+      await postProgressComment(
+        issueContext.repositoryName,
+        issueContext.issueNumber,
+        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
+      );
+      
+      logWithContext('ISSUE_PROCESSOR', 'Error comment posted successfully');
+    } catch (commentError) {
+      logWithContext('ISSUE_PROCESSOR', 'Failed to post error comment', {
+        commentError: (commentError as Error).message
+      });
+    }
 
     throw error;
   }
@@ -245,20 +367,40 @@ function getMessageText(message: SDKMessage): string {
 
 // Process final results from Claude Code
 async function processFinalResults(issueContext: IssueContext, results: ClaudeMessage[]): Promise<void> {
+  logWithContext('FINAL_PROCESSOR', 'Processing final results', {
+    resultsCount: results.length,
+    issueNumber: issueContext.issueNumber
+  });
+  
   const lastResult = results[results.length - 1];
 
   if (lastResult) {
     const messageText = getMessageText(lastResult);
+    
+    logWithContext('FINAL_PROCESSOR', 'Last result extracted', {
+      hasMessage: !!messageText,
+      messageLength: messageText?.length || 0,
+      messageType: lastResult.type
+    });
+    
     if (messageText) {
       // Post final summary comment
+      logWithContext('FINAL_PROCESSOR', 'Posting final summary comment');
+      
       await postProgressComment(
         issueContext.repositoryName,
         issueContext.issueNumber,
         `✅ **Analysis Complete**\n\n${messageText}\n\n---\n🤖 Generated with Claude Code`
       );
+      
+      logWithContext('FINAL_PROCESSOR', 'Final summary comment posted');
     }
+  } else {
+    logWithContext('FINAL_PROCESSOR', 'No results to process');
   }
 
+  logWithContext('FINAL_PROCESSOR', 'Final results processing completed');
+  
   // TODO: In future iterations, implement:
   // - Branch creation with changes
   // - Pull request creation
@@ -268,13 +410,20 @@ async function processFinalResults(issueContext: IssueContext, results: ClaudeMe
 
 // Main issue processing handler
 async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  logWithContext('ISSUE_HANDLER', 'Processing issue request');
+  
   if (!ANTHROPIC_API_KEY) {
+    logWithContext('ISSUE_HANDLER', 'Missing Anthropic API key');
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'ANTHROPIC_API_KEY not provided' }));
     return;
   }
 
   if (!ISSUE_ID || !REPOSITORY_URL) {
+    logWithContext('ISSUE_HANDLER', 'Missing issue context', {
+      hasIssueId: !!ISSUE_ID,
+      hasRepositoryUrl: !!REPOSITORY_URL
+    });
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Issue context not provided' }));
     return;
@@ -291,40 +440,82 @@ async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerR
     author: ISSUE_AUTHOR!
   };
 
+  logWithContext('ISSUE_HANDLER', 'Issue context prepared', {
+    issueId: issueContext.issueId,
+    issueNumber: issueContext.issueNumber,
+    repository: issueContext.repositoryName,
+    author: issueContext.author,
+    labelsCount: issueContext.labels.length
+  });
+
   // Start processing asynchronously
   processIssue(issueContext).catch(error => {
-    log('Async issue processing failed:', error);
+    logWithContext('ISSUE_HANDLER', 'Async issue processing failed', {
+      error: error instanceof Error ? error.message : String(error),
+      issueId: issueContext.issueId
+    });
   });
 
   // Return immediate response
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({
+  const responseData = {
     status: 'processing',
     message: 'Issue processing started',
     issueNumber: ISSUE_NUMBER,
     timestamp: new Date().toISOString()
-  }));
+  };
+  
+  logWithContext('ISSUE_HANDLER', 'Returning immediate response', responseData);
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(responseData));
 }
 
 // Route handler
 async function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const { method, url } = req;
+  const startTime = Date.now();
 
-  log(`${method} ${url}`);
+  logWithContext('REQUEST_HANDLER', 'Incoming request', {
+    method,
+    url,
+    headers: req.headers,
+    remoteAddress: req.socket.remoteAddress
+  });
 
   try {
     if (url === '/' || url === '/container') {
+      logWithContext('REQUEST_HANDLER', 'Routing to health handler');
       await healthHandler(req, res);
     } else if (url === '/error') {
+      logWithContext('REQUEST_HANDLER', 'Routing to error handler');
       await errorHandler(req, res);
     } else if (url === '/process-issue') {
+      logWithContext('REQUEST_HANDLER', 'Routing to process issue handler');
       await processIssueHandler(req, res);
     } else {
+      logWithContext('REQUEST_HANDLER', 'Route not found', { url });
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     }
+    
+    const processingTime = Date.now() - startTime;
+    logWithContext('REQUEST_HANDLER', 'Request completed successfully', {
+      method,
+      url,
+      processingTimeMs: processingTime
+    });
+    
   } catch (error) {
-    log('Request handler error:', error);
+    const processingTime = Date.now() - startTime;
+    
+    logWithContext('REQUEST_HANDLER', 'Request handler error', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      method,
+      url,
+      processingTimeMs: processingTime
+    });
+    
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'Internal server error',
@@ -337,19 +528,68 @@ async function requestHandler(req: http.IncomingMessage, res: http.ServerRespons
 const server = http.createServer(requestHandler);
 
 server.listen(PORT, () => {
-  log(`Claude Code container server running on port ${PORT}`);
-  log('Configuration:', {
+  logWithContext('SERVER', 'Claude Code container server started', {
+    port: PORT,
+    pid: process.pid,
+    nodeVersion: process.version,
+    platform: process.platform,
+    arch: process.arch
+  });
+  
+  logWithContext('SERVER', 'Configuration check', {
     claudeCodeAvailable: !!ANTHROPIC_API_KEY,
     githubTokenAvailable: !!GITHUB_TOKEN,
-    issueContext: !!ISSUE_ID
+    issueContext: !!ISSUE_ID,
+    environment: {
+      instanceId: INSTANCE_ID,
+      message: MESSAGE,
+      issueId: ISSUE_ID,
+      repositoryName: REPOSITORY_NAME
+    }
+  });
+});
+
+// Error handling for server
+server.on('error', (error) => {
+  logWithContext('SERVER', 'Server error', {
+    error: error.message,
+    code: (error as any).code,
+    stack: error.stack
   });
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  log('Received SIGTERM, shutting down gracefully');
+  logWithContext('SERVER', 'Received SIGTERM, shutting down gracefully');
+  
   server.close(() => {
-    log('Server closed');
+    logWithContext('SERVER', 'Server closed successfully');
     process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  logWithContext('SERVER', 'Received SIGINT, shutting down gracefully');
+  
+  server.close(() => {
+    logWithContext('SERVER', 'Server closed successfully');
+    process.exit(0);
+  });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logWithContext('SERVER', 'Uncaught exception', {
+    error: error.message,
+    stack: error.stack
+  });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logWithContext('SERVER', 'Unhandled promise rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+    promise: String(promise)
   });
 });
