@@ -1,4 +1,5 @@
 import { Container, loadBalance, getContainer } from 'cf-containers';
+import jwt from '@tsndr/cloudflare-worker-jwt';
 
 // GitHub App Manifest Template
 interface GitHubAppManifest {
@@ -80,7 +81,7 @@ async function encrypt(text: string, key?: CryptoKey): Promise<string> {
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encodedText = new TextEncoder().encode(text);
-  
+
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
@@ -91,7 +92,7 @@ async function encrypt(text: string, key?: CryptoKey): Promise<string> {
   const combined = new Uint8Array(iv.length + encrypted.byteLength);
   combined.set(iv);
   combined.set(new Uint8Array(encrypted), iv.length);
-  
+
   return btoa(String.fromCharCode(...combined));
 }
 
@@ -124,6 +125,109 @@ async function decrypt(encryptedText: string, key?: CryptoKey): Promise<string> 
   );
 
   return new TextDecoder().decode(decrypted);
+}
+
+// JWT token generation for GitHub App authentication
+async function generateAppJWT(appId: string, privateKey: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+
+  const payload = {
+    iss: appId,
+    iat: now - 60, // Issue time (1 minute ago to account for clock skew)
+    exp: now + 600, // Expiration time (10 minutes from now)
+  };
+
+  // GitHub requires RS256 algorithm for App JWT tokens
+  const token = await jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+  return token;
+}
+
+// Generate installation access token for making GitHub API calls
+async function generateInstallationToken(
+  appId: string,
+  privateKey: string,
+  installationId: string
+): Promise<{ token: string; expires_at: string } | null> {
+  try {
+    // First, generate App JWT
+    const appJWT = await generateAppJWT(appId, privateKey);
+
+    // Exchange for installation access token
+    const response = await fetch(
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${appJWT}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'Worker-GitHub-Integration'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Failed to generate installation token: ${response.status} ${errorText}`);
+      return null;
+    }
+
+    const tokenData = await response.json() as { token: string; expires_at: string };
+    return tokenData;
+  } catch (error) {
+    console.error('Error generating installation token:', error);
+    return null;
+  }
+}
+
+// GitHub API client with authentication
+class GitHubAPI {
+  private configDO: any;
+
+  constructor(configDO: any) {
+    this.configDO = configDO;
+  }
+
+  async makeAuthenticatedRequest(path: string, options: RequestInit = {}): Promise<Response> {
+    const tokenResponse = await this.configDO.fetch(new Request('http://internal/get-installation-token'));
+    const tokenData = await tokenResponse.json() as { token: string };
+
+    if (!tokenData.token) {
+      throw new Error('No valid installation token available');
+    }
+
+    const headers = {
+      'Authorization': `Bearer ${tokenData.token}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Worker-GitHub-Integration',
+      ...options.headers
+    };
+
+    return fetch(`https://api.github.com${path}`, {
+      ...options,
+      headers
+    });
+  }
+
+  // Get repository information
+  async getRepository(owner: string, repo: string) {
+    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}`);
+    return response.json();
+  }
+
+  // Comment on an issue or pull request
+  async createComment(owner: string, repo: string, issueNumber: number, body: string) {
+    const response = await this.makeAuthenticatedRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body })
+    });
+    return response.json();
+  }
+
+  // Get installation repositories
+  async getInstallationRepositories() {
+    const response = await this.makeAuthenticatedRequest('/installation/repositories');
+    return response.json();
+  }
 }
 
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
@@ -164,16 +268,16 @@ async function handleGitHubSetup(_request: Request, origin: string): Promise<Res
     <title>GitHub App Setup - Cloudflare Worker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { 
+        body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px; 
-            margin: 40px auto; 
+            max-width: 800px;
+            margin: 40px auto;
             padding: 20px;
             line-height: 1.6;
             color: #333;
         }
-        .header { 
-            text-align: center; 
+        .header {
+            text-align: center;
             margin-bottom: 40px;
         }
         .webhook-info {
@@ -243,7 +347,7 @@ async function handleGitHubSetup(_request: Request, origin: string): Promise<Res
 
     <div class="steps">
         <h3>Setup Steps</h3>
-        
+
         <div class="step">
             <div class="step-number">1</div>
             <strong>Create GitHub App</strong><br>
@@ -277,7 +381,7 @@ async function handleGitHubSetup(_request: Request, origin: string): Promise<Res
         <pre style="background: #f8f8f8; padding: 15px; border-radius: 4px; overflow-x: auto;">
 Permissions:
 - Repository contents: read
-- Repository metadata: read  
+- Repository metadata: read
 - Pull requests: write
 - Issues: write
 
@@ -303,7 +407,7 @@ Webhook URL: ${webhookUrl}
 
 async function handleOAuthCallback(_request: Request, url: URL, env: any): Promise<Response> {
   const code = url.searchParams.get('code');
-  
+
   if (!code) {
     return new Response('Missing authorization code', { status: 400 });
   }
@@ -353,7 +457,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
       // Store in Durable Object (using app ID as unique identifier)
       const id = env.GITHUB_APP_CONFIG.idFromName(appData.id.toString());
       const configDO = env.GITHUB_APP_CONFIG.get(id);
-      
+
       // We need to create a simple API for the Durable Object
       await configDO.fetch(new Request('http://internal/store', {
         method: 'POST',
@@ -365,7 +469,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
       console.error('Failed to store app config:', error);
       // Continue with the flow even if storage fails
     }
-    
+
     const html = `
 <!DOCTYPE html>
 <html>
@@ -373,10 +477,10 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
     <title>GitHub App Created Successfully</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { 
+        body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 600px; 
-            margin: 40px auto; 
+            max-width: 600px;
+            margin: 40px auto;
             padding: 20px;
             text-align: center;
         }
@@ -402,7 +506,7 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
 </head>
 <body>
     <h1 class="success">✅ GitHub App Created Successfully!</h1>
-    
+
     <div class="app-info">
         <h3>App Details</h3>
         <p><strong>Name:</strong> ${appData.name}</p>
@@ -411,14 +515,14 @@ async function handleOAuthCallback(_request: Request, url: URL, env: any): Promi
     </div>
 
     <p>Your GitHub App has been created with all necessary permissions and webhook configuration.</p>
-    
+
     <h3>Next Step: Install Your App</h3>
     <p>Click the button below to install the app on your repositories and start receiving webhooks.</p>
-    
+
     <a href="${appData.html_url}/installations/new" class="install-btn">
         📦 Install App on Repositories
     </a>
-    
+
     <p><small>App credentials have been securely stored and webhooks are ready to receive events.</small></p>
 </body>
 </html>`;
@@ -441,10 +545,10 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
     <title>Install GitHub App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { 
+        body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 600px; 
-            margin: 40px auto; 
+            max-width: 600px;
+            margin: 40px auto;
             padding: 20px;
         }
         .step {
@@ -457,9 +561,9 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
 </head>
 <body>
     <h1>📦 Install Your GitHub App</h1>
-    
+
     <p>Follow these steps to complete the setup:</p>
-    
+
     <div class="step">
         <h3>1. Choose Repositories</h3>
         <p>Select which repositories should send webhooks to your worker. You can choose:</p>
@@ -468,12 +572,12 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
             <li><strong>Selected repositories</strong> - Choose specific repos</li>
         </ul>
     </div>
-    
+
     <div class="step">
         <h3>2. Complete Installation</h3>
         <p>Click "Install" to finish the setup process.</p>
     </div>
-    
+
     <div class="step">
         <h3>3. Test Webhooks</h3>
         <p>Once installed, try:</p>
@@ -483,9 +587,9 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
             <li>Create an issue</li>
         </ul>
     </div>
-    
+
     <p><strong>✅ Once installation is complete, your worker will start receiving GitHub webhooks!</strong></p>
-    
+
     <p><a href="/gh-setup">← Back to Setup</a></p>
 </body>
 </html>`;
@@ -498,7 +602,7 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
 async function handleGitHubStatus(_request: Request, env: any): Promise<Response> {
   const url = new URL(_request.url);
   const appId = url.searchParams.get('app_id');
-  
+
   if (!appId) {
     return new Response(JSON.stringify({ error: 'Missing app_id parameter' }), {
       headers: { 'Content-Type': 'application/json' },
@@ -509,10 +613,10 @@ async function handleGitHubStatus(_request: Request, env: any): Promise<Response
   try {
     const id = env.GITHUB_APP_CONFIG.idFromName(appId);
     const configDO = env.GITHUB_APP_CONFIG.get(id);
-    
+
     const response = await configDO.fetch(new Request('http://internal/get'));
     const config = await response.json() as GitHubAppConfig | null;
-    
+
     if (!config) {
       return new Response(JSON.stringify({ error: 'No configuration found for this app ID' }), {
         headers: { 'Content-Type': 'application/json' },
@@ -537,7 +641,7 @@ async function handleGitHubStatus(_request: Request, env: any): Promise<Response
     return new Response(JSON.stringify(safeConfig, null, 2), {
       headers: { 'Content-Type': 'application/json' }
     });
-    
+
   } catch (error) {
     console.error('Error fetching GitHub status:', error);
     return new Response(JSON.stringify({ error: 'Internal server error' }), {
@@ -554,7 +658,7 @@ async function verifyGitHubSignature(payload: string, signature: string, secret:
   }
 
   const sigHex = signature.replace('sha256=', '');
-  
+
   // Create HMAC-SHA256 hash
   const key = await crypto.subtle.importKey(
     'raw',
@@ -600,7 +704,7 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
 
     // Determine which app config to use based on the webhook
     let appId: string | undefined;
-    
+
     if (webhookData.installation?.app_id) {
       // Installation events include app_id directly
       appId = webhookData.installation.app_id.toString();
@@ -623,7 +727,7 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
     // Get app configuration and decrypt webhook secret
     const id = env.GITHUB_APP_CONFIG.idFromName(appId);
     const configDO = env.GITHUB_APP_CONFIG.get(id);
-    
+
     const configResponse = await configDO.fetch(new Request('http://internal/get-credentials'));
     if (!configResponse.ok) {
       console.log('No app configuration found for app ID:', appId);
@@ -651,7 +755,7 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
 
     // Route to appropriate event handler
     const eventResponse = await routeWebhookEvent(event, webhookData, configDO, env);
-    
+
     console.log(`Successfully processed ${event} webhook (delivery: ${delivery})`);
     return eventResponse;
 
@@ -666,19 +770,19 @@ async function routeWebhookEvent(event: string, data: any, configDO: any, env: a
   switch (event) {
     case 'installation':
       return handleInstallationEvent(data, configDO);
-    
+
     case 'installation_repositories':
       return handleInstallationRepositoriesEvent(data, configDO);
-    
+
     case 'push':
-      return handlePushEvent(data, env);
-    
+      return handlePushEvent(data, env, configDO);
+
     case 'pull_request':
-      return handlePullRequestEvent(data, env);
-    
+      return handlePullRequestEvent(data, env, configDO);
+
     case 'issues':
-      return handleIssuesEvent(data, env);
-    
+      return handleIssuesEvent(data, env, configDO);
+
     default:
       console.log(`Unhandled webhook event: ${event}`);
       return new Response('Event acknowledged', { status: 200 });
@@ -689,7 +793,7 @@ async function routeWebhookEvent(event: string, data: any, configDO: any, env: a
 async function handleInstallationEvent(data: any, configDO: any): Promise<Response> {
   const action = data.action;
   const installation = data.installation;
-  
+
   if (action === 'created') {
     // App was installed - update configuration with installation details
     const repositories = data.repositories || [];
@@ -725,7 +829,7 @@ async function handleInstallationEvent(data: any, configDO: any): Promise<Respon
 // Handle repository changes (repos added/removed from installation)
 async function handleInstallationRepositoriesEvent(data: any, configDO: any): Promise<Response> {
   const action = data.action;
-  
+
   if (action === 'added') {
     const addedRepos = data.repositories_added || [];
     for (const repo of addedRepos) {
@@ -754,18 +858,29 @@ async function handleInstallationRepositoriesEvent(data: any, configDO: any): Pr
 }
 
 // Handle push events
-async function handlePushEvent(data: any, env: any): Promise<Response> {
+async function handlePushEvent(data: any, env: any, configDO: any): Promise<Response> {
   const repository = data.repository;
   const commits = data.commits || [];
-  
+
   console.log(`Push event: ${commits.length} commits to ${repository.full_name}`);
-  
-  // Example: Wake up a container based on the repository
+
+  // Create GitHub API client for authenticated requests
+  const githubAPI = new GitHubAPI(configDO);
+
+  try {
+    // Example: Get repository details with authenticated API call
+    const repoData = await githubAPI.getRepository(repository.owner.login, repository.name);
+    console.log(`Repository stars: ${repoData.stargazers_count}`);
+  } catch (error) {
+    console.error('Failed to fetch repository data:', error);
+  }
+
+  // Wake up a container based on the repository
   const containerName = `repo-${repository.id}`;
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
-  
-  // You could pass webhook data to the container
+
+  // Pass webhook data to the container
   const containerResponse = await container.fetch(new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -773,28 +888,47 @@ async function handlePushEvent(data: any, env: any): Promise<Response> {
       event: 'push',
       repository: repository.full_name,
       commits: commits.length,
-      ref: data.ref
+      ref: data.ref,
+      author: commits[0]?.author?.name || 'Unknown'
     })
   }));
-  
+
   console.log(`Container response status: ${containerResponse.status}`);
-  
+
   return new Response('Push event processed', { status: 200 });
 }
 
 // Handle pull request events
-async function handlePullRequestEvent(data: any, env: any): Promise<Response> {
+async function handlePullRequestEvent(data: any, env: any, configDO: any): Promise<Response> {
   const action = data.action;
   const pullRequest = data.pull_request;
   const repository = data.repository;
-  
+
   console.log(`Pull request ${action}: #${pullRequest.number} in ${repository.full_name}`);
-  
-  // Example: Different actions could trigger different container behaviors
+
+  // Create GitHub API client for authenticated requests
+  const githubAPI = new GitHubAPI(configDO);
+
+  // Example: Comment on PR when it's opened
+  if (action === 'opened') {
+    try {
+      await githubAPI.createComment(
+        repository.owner.login,
+        repository.name,
+        pullRequest.number,
+        `🚀 Thanks for the pull request! This event was processed by our Worker container.`
+      );
+      console.log(`Commented on PR #${pullRequest.number}`);
+    } catch (error) {
+      console.error('Failed to comment on PR:', error);
+    }
+  }
+
+  // Wake up container for all PR events
   const containerName = `repo-${repository.id}`;
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
-  
+
   await container.fetch(new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -803,26 +937,45 @@ async function handlePullRequestEvent(data: any, env: any): Promise<Response> {
       action,
       repository: repository.full_name,
       pr_number: pullRequest.number,
-      pr_title: pullRequest.title
+      pr_title: pullRequest.title,
+      pr_author: pullRequest.user.login
     })
   }));
-  
+
   return new Response('Pull request event processed', { status: 200 });
 }
 
 // Handle issues events
-async function handleIssuesEvent(data: any, env: any): Promise<Response> {
+async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Response> {
   const action = data.action;
   const issue = data.issue;
   const repository = data.repository;
-  
+
   console.log(`Issue ${action}: #${issue.number} in ${repository.full_name}`);
-  
-  // Example: Process issue events
+
+  // Create GitHub API client for authenticated requests
+  const githubAPI = new GitHubAPI(configDO);
+
+  // Example: Comment on issue when it's opened
+  if (action === 'opened') {
+    try {
+      await githubAPI.createComment(
+        repository.owner.login,
+        repository.name,
+        issue.number,
+        `👋 Thanks for opening this issue! Our Worker is now tracking it.`
+      );
+      console.log(`Commented on issue #${issue.number}`);
+    } catch (error) {
+      console.error('Failed to comment on issue:', error);
+    }
+  }
+
+  // Wake up container for issue events
   const containerName = `repo-${repository.id}`;
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
-  
+
   await container.fetch(new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -831,10 +984,11 @@ async function handleIssuesEvent(data: any, env: any): Promise<Response> {
       action,
       repository: repository.full_name,
       issue_number: issue.number,
-      issue_title: issue.title
+      issue_title: issue.title,
+      issue_author: issue.user.login
     })
   }));
-  
+
   return new Response('Issues event processed', { status: 200 });
 }
 
@@ -847,53 +1001,58 @@ export class GitHubAppConfigDO {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    
+
     if (url.pathname === '/store' && request.method === 'POST') {
       const config = await request.json() as GitHubAppConfig;
       await this.storeAppConfig(config);
       return new Response('OK');
     }
-    
+
     if (url.pathname === '/get' && request.method === 'GET') {
       const config = await this.getAppConfig();
       return new Response(JSON.stringify(config));
     }
-    
+
     if (url.pathname === '/get-credentials' && request.method === 'GET') {
       const credentials = await this.getDecryptedCredentials();
       return new Response(JSON.stringify(credentials));
     }
-    
+
     if (url.pathname === '/log-webhook' && request.method === 'POST') {
-      const { event, delivery, timestamp } = await request.json();
-      await this.logWebhook(event);
+      const webhookData = await request.json() as { event: string; delivery: string; timestamp: string };
+      await this.logWebhook(webhookData.event);
       return new Response('OK');
     }
-    
+
     if (url.pathname === '/update-installation' && request.method === 'POST') {
-      const { installationId, repositories, owner } = await request.json();
-      await this.updateInstallation(installationId, repositories);
+      const installationData = await request.json() as { installationId: string; repositories: Repository[]; owner: any };
+      await this.updateInstallation(installationData.installationId, installationData.repositories);
       // Also update owner information
       const config = await this.getAppConfig();
       if (config) {
-        config.owner = owner;
+        config.owner = installationData.owner;
         await this.storeAppConfig(config);
       }
       return new Response('OK');
     }
-    
+
     if (url.pathname === '/add-repository' && request.method === 'POST') {
       const repo = await request.json() as Repository;
       await this.addRepository(repo);
       return new Response('OK');
     }
-    
+
     if (url.pathname.startsWith('/remove-repository/') && request.method === 'DELETE') {
       const repoId = parseInt(url.pathname.split('/').pop() || '0');
       await this.removeRepository(repoId);
       return new Response('OK');
     }
-    
+
+    if (url.pathname === '/get-installation-token' && request.method === 'GET') {
+      const token = await this.getInstallationToken();
+      return new Response(JSON.stringify({ token }));
+    }
+
     return new Response('Not Found', { status: 404 });
   }
 
@@ -914,7 +1073,7 @@ export class GitHubAppConfigDO {
     }
   }
 
-  async logWebhook(event: string): Promise<void> {
+  async logWebhook(_event: string): Promise<void> {
     const config = await this.getAppConfig();
     if (config) {
       config.lastWebhookAt = new Date().toISOString();
@@ -953,6 +1112,45 @@ export class GitHubAppConfigDO {
       return { privateKey, webhookSecret };
     } catch (error) {
       console.error('Failed to decrypt credentials:', error);
+      return null;
+    }
+  }
+
+  async getInstallationToken(): Promise<string | null> {
+    const config = await this.getAppConfig();
+    if (!config || !config.installationId) return null;
+
+    try {
+      // Check if we have a cached token that's still valid
+      const cachedToken = await this.storage.get('cached_installation_token') as { token: string; expires_at: string } | null;
+      if (cachedToken) {
+        const expiresAt = new Date(cachedToken.expires_at);
+        const now = new Date();
+        // Check if token expires in more than 5 minutes
+        if (expiresAt.getTime() - now.getTime() > 5 * 60 * 1000) {
+          return cachedToken.token;
+        }
+      }
+
+      // Generate new token
+      const credentials = await this.getDecryptedCredentials();
+      if (!credentials) return null;
+
+      const tokenData = await generateInstallationToken(
+        config.appId,
+        credentials.privateKey,
+        config.installationId
+      );
+
+      if (tokenData) {
+        // Cache the token
+        await this.storage.put('cached_installation_token', tokenData);
+        return tokenData.token;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Failed to get installation token:', error);
       return null;
     }
   }

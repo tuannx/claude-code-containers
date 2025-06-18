@@ -298,9 +298,9 @@ export class GitHubAppConfig extends DurableObject {
 1. **✅ COMPLETED - Start with `/gh-setup` UI**: Create setup page with manifest generation
 2. **✅ COMPLETED - Add OAuth callback handler**: Process app creation responses from GitHub
 3. **✅ COMPLETED - Implement credential storage**: Secure storage in Durable Objects with encryption
-4. **⏳ TODO - Build webhook infrastructure**: Create webhook endpoints and signature verification
-5. **⏳ TODO - Add installation tracking**: Handle installation events and repository management
-6. **⏳ TODO - Implement token management**: JWT generation for GitHub API calls
+4. **✅ COMPLETED - Build webhook infrastructure**: Create webhook endpoints and signature verification
+5. **✅ COMPLETED - Add installation tracking**: Handle installation events and repository management
+6. **✅ COMPLETED - Implement token management**: JWT generation for GitHub API calls
 7. **⏳ TODO - Polish UI and error handling**: Complete user experience and edge cases
 
 ## Phase 1 Implementation Status
@@ -368,11 +368,48 @@ The `/gh-setup` flow is now fully functional and ready for testing:
    - Returns safe information without exposing sensitive credentials
    - JSON API for debugging and verification
 
-### ⏳ Next Phase (Phase 3):
+### ✅ Phase 4 COMPLETED:
 
-- JWT token generation for GitHub API authentication
-- Webhook endpoint implementation with signature verification
-- Installation event handling and repository management
+**✅ IMPLEMENTED Components:**
+
+1. **Webhook Processing Infrastructure** - ✅ DONE
+   - `/webhooks/github` endpoint with HMAC-SHA256 signature verification
+   - Event type routing for push, pull_request, issues, installation events
+   - Container wake-up functionality based on repository events
+   - Webhook delivery tracking and logging
+
+2. **Installation Event Handling** - ✅ DONE
+   - Installation event handlers for app installation/uninstallation
+   - Repository management (add/remove repositories from installation)
+   - Dynamic container routing based on repository ID
+   - App ID detection for different webhook event types
+
+### ✅ Phase 5 COMPLETED:
+
+**✅ IMPLEMENTED Components:**
+
+1. **JWT Token Management** - ✅ DONE
+   - App JWT generation with RS256 algorithm for GitHub authentication
+   - Installation token exchange with automatic refresh
+   - Token caching with 5-minute buffer before expiration
+   - Secure credential decryption for token generation
+
+2. **GitHub API Client** - ✅ DONE
+   - Authenticated API client with automatic token management
+   - Repository information retrieval
+   - Issue and pull request commenting capabilities
+   - Installation repository listing
+
+3. **Enhanced Webhook Handlers** - ✅ DONE
+   - Automated commenting on new issues and pull requests
+   - Repository data enrichment via GitHub API
+   - Improved container data passing with author information
+
+### ⏳ Next Phase (Phase 6):
+
+- Enhanced security measures and rate limiting
+- Advanced error handling and monitoring
+- UI improvements and status dashboard enhancements
 
 ## Streamlined User Experience Flow
 
