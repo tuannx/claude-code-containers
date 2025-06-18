@@ -3,24 +3,13 @@ import { promises as fs } from 'fs';
 import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { Octokit } from '@octokit/rest';
 import simpleGit from 'simple-git';
+import * as path from 'path';
 
 const PORT = 8080;
 
 // Environment variables
 const MESSAGE = process.env.MESSAGE || 'Hello from Claude Code Container';
 const INSTANCE_ID = process.env.CLOUDFLARE_DEPLOYMENT_ID || 'unknown';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-
-// Issue context (passed via environment variables)
-const ISSUE_ID = process.env.ISSUE_ID;
-const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
-const ISSUE_TITLE = process.env.ISSUE_TITLE;
-const ISSUE_BODY = process.env.ISSUE_BODY;
-const ISSUE_LABELS = process.env.ISSUE_LABELS ? JSON.parse(process.env.ISSUE_LABELS) : [];
-const REPOSITORY_URL = process.env.REPOSITORY_URL;
-const REPOSITORY_NAME = process.env.REPOSITORY_NAME;
-const ISSUE_AUTHOR = process.env.ISSUE_AUTHOR;
 
 // Types
 interface IssueContext {
@@ -46,14 +35,17 @@ interface HealthStatus {
 // Use the SDK's actual message type
 type ClaudeMessage = SDKMessage;
 
-// Initialize GitHub client
-const octokit = GITHUB_TOKEN ? new Octokit({ auth: GITHUB_TOKEN }) : null;
+// Initialize GitHub client function (to be called with updated token)
+function getGitHubClient(): Octokit | null {
+  const token = process.env.GITHUB_TOKEN;
+  return token ? new Octokit({ auth: token }) : null;
+}
 
 // Enhanced logging utility with context
 function logWithContext(context: string, message: string, data?: any): void {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${context}] ${message}`;
-  
+
   if (data) {
     console.log(logMessage, JSON.stringify(data, null, 2));
   } else {
@@ -69,14 +61,14 @@ function log(message: string, data: any = null): void {
 // Basic health check handler
 async function healthHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   logWithContext('HEALTH', 'Health check requested');
-  
+
   const response: HealthStatus = {
     status: 'healthy',
     message: MESSAGE,
     instanceId: INSTANCE_ID,
     timestamp: new Date().toISOString(),
-    claudeCodeAvailable: !!ANTHROPIC_API_KEY,
-    githubTokenAvailable: !!GITHUB_TOKEN
+    claudeCodeAvailable: !!process.env.ANTHROPIC_API_KEY,
+    githubTokenAvailable: !!process.env.GITHUB_TOKEN
   };
 
   logWithContext('HEALTH', 'Health check response', {
@@ -168,6 +160,7 @@ Work step by step and provide clear explanations of your approach.
 
 // Post progress comment to GitHub
 async function postProgressComment(repositoryName: string, issueNumber: string, message: string): Promise<void> {
+  const octokit = getGitHubClient();
   if (!octokit) {
     logWithContext('GITHUB_COMMENT', 'GitHub token not available, skipping comment');
     return;
@@ -175,21 +168,21 @@ async function postProgressComment(repositoryName: string, issueNumber: string, 
 
   try {
     const [owner, repo] = repositoryName.split('/');
-    
+
     logWithContext('GITHUB_COMMENT', 'Posting progress comment', {
       owner,
       repo,
       issueNumber,
       messageLength: message.length
     });
-    
+
     const response = await octokit.rest.issues.createComment({
       owner,
       repo,
       issue_number: parseInt(issueNumber),
       body: `🤖 **Claude Code Progress Update**\n\n${message}`
     });
-    
+
     logWithContext('GITHUB_COMMENT', 'Progress comment posted successfully', {
       commentId: response.data.id,
       commentUrl: response.data.html_url
@@ -206,7 +199,7 @@ async function postProgressComment(repositoryName: string, issueNumber: string, 
 // Process issue with Claude Code
 async function processIssue(issueContext: IssueContext): Promise<void> {
   const startTime = Date.now();
-  
+
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
     issueId: issueContext.issueId,
     issueNumber: issueContext.issueNumber,
@@ -220,7 +213,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
     // 1. Setup workspace and clone repository
     logWithContext('ISSUE_PROCESSOR', 'Setting up workspace');
     const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
-    
+
     logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
       workspaceDir
     });
@@ -250,12 +243,12 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       from: originalCwd,
       to: workspaceDir
     });
-    
+
     process.chdir(workspaceDir);
 
     try {
       const claudeStartTime = Date.now();
-      
+
       for await (const message of query({
         prompt,
         options: {
@@ -276,12 +269,12 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         // Stream progress back to GitHub for assistant messages
         if (message.type === 'assistant' && turnCount % 2 === 0) {
           const messageText = getMessageText(message);
-          
+
           logWithContext('CLAUDE_CODE', 'Posting progress update to GitHub', {
             turnCount,
             messageLength: messageText.length
           });
-          
+
           await postProgressComment(
             issueContext.repositoryName,
             issueContext.issueNumber,
@@ -289,14 +282,14 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
           );
         }
       }
-      
+
       const claudeTime = Date.now() - claudeStartTime;
       logWithContext('CLAUDE_CODE', 'Claude Code execution completed', {
         totalTurns: turnCount,
         executionTimeMs: claudeTime,
         resultsCount: results.length
       });
-      
+
     } finally {
       // Restore original working directory
       logWithContext('ISSUE_PROCESSOR', 'Restoring original working directory', {
@@ -317,7 +310,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
 
   } catch (error) {
     const totalTime = Date.now() - startTime;
-    
+
     logWithContext('ISSUE_PROCESSOR', 'Error processing issue', {
       error: (error as Error).message,
       stack: (error as Error).stack,
@@ -328,13 +321,13 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
     // Post error comment to GitHub
     try {
       logWithContext('ISSUE_PROCESSOR', 'Posting error comment to GitHub');
-      
+
       await postProgressComment(
         issueContext.repositoryName,
         issueContext.issueNumber,
         `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
       );
-      
+
       logWithContext('ISSUE_PROCESSOR', 'Error comment posted successfully');
     } catch (commentError) {
       logWithContext('ISSUE_PROCESSOR', 'Failed to post error comment', {
@@ -371,28 +364,28 @@ async function processFinalResults(issueContext: IssueContext, results: ClaudeMe
     resultsCount: results.length,
     issueNumber: issueContext.issueNumber
   });
-  
+
   const lastResult = results[results.length - 1];
 
   if (lastResult) {
     const messageText = getMessageText(lastResult);
-    
+
     logWithContext('FINAL_PROCESSOR', 'Last result extracted', {
       hasMessage: !!messageText,
       messageLength: messageText?.length || 0,
       messageType: lastResult.type
     });
-    
+
     if (messageText) {
       // Post final summary comment
       logWithContext('FINAL_PROCESSOR', 'Posting final summary comment');
-      
+
       await postProgressComment(
         issueContext.repositoryName,
         issueContext.issueNumber,
         `✅ **Analysis Complete**\n\n${messageText}\n\n---\n🤖 Generated with Claude Code`
       );
-      
+
       logWithContext('FINAL_PROCESSOR', 'Final summary comment posted');
     }
   } else {
@@ -400,7 +393,7 @@ async function processFinalResults(issueContext: IssueContext, results: ClaudeMe
   }
 
   logWithContext('FINAL_PROCESSOR', 'Final results processing completed');
-  
+
   // TODO: In future iterations, implement:
   // - Branch creation with changes
   // - Pull request creation
@@ -409,20 +402,82 @@ async function processFinalResults(issueContext: IssueContext, results: ClaudeMe
 }
 
 // Main issue processing handler
-async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function processIssueHandler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   logWithContext('ISSUE_HANDLER', 'Processing issue request');
-  
-  if (!ANTHROPIC_API_KEY) {
+
+  // Read request body to get environment variables if they're passed in the request
+  let requestBody = '';
+  for await (const chunk of req) {
+    requestBody += chunk;
+  }
+
+  let issueContextFromRequest: any = {};
+  if (requestBody) {
+    try {
+      issueContextFromRequest = JSON.parse(requestBody);
+      logWithContext('ISSUE_HANDLER', 'Received issue context in request body', {
+        hasAnthropicKey: !!issueContextFromRequest.ANTHROPIC_API_KEY,
+        hasGithubToken: !!issueContextFromRequest.GITHUB_TOKEN,
+        keysReceived: Object.keys(issueContextFromRequest)
+      });
+
+      // Set environment variables from request body if they exist
+      if (issueContextFromRequest.ANTHROPIC_API_KEY) {
+        process.env.ANTHROPIC_API_KEY = issueContextFromRequest.ANTHROPIC_API_KEY;
+      }
+      if (issueContextFromRequest.GITHUB_TOKEN) {
+        process.env.GITHUB_TOKEN = issueContextFromRequest.GITHUB_TOKEN;
+      }
+      if (issueContextFromRequest.ISSUE_ID) {
+        process.env.ISSUE_ID = issueContextFromRequest.ISSUE_ID;
+      }
+      if (issueContextFromRequest.ISSUE_NUMBER) {
+        process.env.ISSUE_NUMBER = issueContextFromRequest.ISSUE_NUMBER;
+      }
+      if (issueContextFromRequest.ISSUE_TITLE) {
+        process.env.ISSUE_TITLE = issueContextFromRequest.ISSUE_TITLE;
+      }
+      if (issueContextFromRequest.ISSUE_BODY) {
+        process.env.ISSUE_BODY = issueContextFromRequest.ISSUE_BODY;
+      }
+      if (issueContextFromRequest.ISSUE_LABELS) {
+        process.env.ISSUE_LABELS = issueContextFromRequest.ISSUE_LABELS;
+      }
+      if (issueContextFromRequest.REPOSITORY_URL) {
+        process.env.REPOSITORY_URL = issueContextFromRequest.REPOSITORY_URL;
+      }
+      if (issueContextFromRequest.REPOSITORY_NAME) {
+        process.env.REPOSITORY_NAME = issueContextFromRequest.REPOSITORY_NAME;
+      }
+      if (issueContextFromRequest.ISSUE_AUTHOR) {
+        process.env.ISSUE_AUTHOR = issueContextFromRequest.ISSUE_AUTHOR;
+      }
+
+      logWithContext('ISSUE_HANDLER', 'Environment variables updated from request', {
+        anthropicKeySet: !!process.env.ANTHROPIC_API_KEY,
+        githubTokenSet: !!process.env.GITHUB_TOKEN,
+        issueIdSet: !!process.env.ISSUE_ID
+      });
+    } catch (error) {
+      logWithContext('ISSUE_HANDLER', 'Error parsing request body', {
+        error: (error as Error).message,
+        bodyLength: requestBody.length
+      });
+    }
+  }
+
+  // Check for API key (now potentially updated from request)
+  if (!process.env.ANTHROPIC_API_KEY) {
     logWithContext('ISSUE_HANDLER', 'Missing Anthropic API key');
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'ANTHROPIC_API_KEY not provided' }));
     return;
   }
 
-  if (!ISSUE_ID || !REPOSITORY_URL) {
+  if (!process.env.ISSUE_ID || !process.env.REPOSITORY_URL) {
     logWithContext('ISSUE_HANDLER', 'Missing issue context', {
-      hasIssueId: !!ISSUE_ID,
-      hasRepositoryUrl: !!REPOSITORY_URL
+      hasIssueId: !!process.env.ISSUE_ID,
+      hasRepositoryUrl: !!process.env.REPOSITORY_URL
     });
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Issue context not provided' }));
@@ -430,14 +485,14 @@ async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerR
   }
 
   const issueContext: IssueContext = {
-    issueId: ISSUE_ID!,
-    issueNumber: ISSUE_NUMBER!,
-    title: ISSUE_TITLE!,
-    description: ISSUE_BODY!,
-    labels: ISSUE_LABELS,
-    repositoryUrl: REPOSITORY_URL!,
-    repositoryName: REPOSITORY_NAME!,
-    author: ISSUE_AUTHOR!
+    issueId: process.env.ISSUE_ID!,
+    issueNumber: process.env.ISSUE_NUMBER!,
+    title: process.env.ISSUE_TITLE!,
+    description: process.env.ISSUE_BODY!,
+    labels: process.env.ISSUE_LABELS ? JSON.parse(process.env.ISSUE_LABELS) : [],
+    repositoryUrl: process.env.REPOSITORY_URL!,
+    repositoryName: process.env.REPOSITORY_NAME!,
+    author: process.env.ISSUE_AUTHOR!
   };
 
   logWithContext('ISSUE_HANDLER', 'Issue context prepared', {
@@ -460,12 +515,12 @@ async function processIssueHandler(_req: http.IncomingMessage, res: http.ServerR
   const responseData = {
     status: 'processing',
     message: 'Issue processing started',
-    issueNumber: ISSUE_NUMBER,
+    issueNumber: process.env.ISSUE_NUMBER,
     timestamp: new Date().toISOString()
   };
-  
+
   logWithContext('ISSUE_HANDLER', 'Returning immediate response', responseData);
-  
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(responseData));
 }
@@ -497,17 +552,17 @@ async function requestHandler(req: http.IncomingMessage, res: http.ServerRespons
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     }
-    
+
     const processingTime = Date.now() - startTime;
     logWithContext('REQUEST_HANDLER', 'Request completed successfully', {
       method,
       url,
       processingTimeMs: processingTime
     });
-    
+
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    
+
     logWithContext('REQUEST_HANDLER', 'Request handler error', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
@@ -515,7 +570,7 @@ async function requestHandler(req: http.IncomingMessage, res: http.ServerRespons
       url,
       processingTimeMs: processingTime
     });
-    
+
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'Internal server error',
@@ -535,16 +590,16 @@ server.listen(PORT, () => {
     platform: process.platform,
     arch: process.arch
   });
-  
+
   logWithContext('SERVER', 'Configuration check', {
-    claudeCodeAvailable: !!ANTHROPIC_API_KEY,
-    githubTokenAvailable: !!GITHUB_TOKEN,
-    issueContext: !!ISSUE_ID,
+    claudeCodeAvailable: !!process.env.ANTHROPIC_API_KEY,
+    githubTokenAvailable: !!process.env.GITHUB_TOKEN,
+    issueContext: !!process.env.ISSUE_ID,
     environment: {
       instanceId: INSTANCE_ID,
       message: MESSAGE,
-      issueId: ISSUE_ID,
-      repositoryName: REPOSITORY_NAME
+      issueId: process.env.ISSUE_ID,
+      repositoryName: process.env.REPOSITORY_NAME
     }
   });
 });
@@ -561,7 +616,7 @@ server.on('error', (error) => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logWithContext('SERVER', 'Received SIGTERM, shutting down gracefully');
-  
+
   server.close(() => {
     logWithContext('SERVER', 'Server closed successfully');
     process.exit(0);
@@ -570,7 +625,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   logWithContext('SERVER', 'Received SIGINT, shutting down gracefully');
-  
+
   server.close(() => {
     logWithContext('SERVER', 'Server closed successfully');
     process.exit(0);

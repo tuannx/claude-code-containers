@@ -2280,14 +2280,14 @@ export class MyContainer extends Container {
         });
 
         logWithContext('CONTAINER', 'Forwarding request to container');
-        
+
         // Create a new request with the JSON data to avoid ReadableStream being disturbed
         const newRequest = new Request(request.url, {
           method: request.method,
           headers: request.headers,
           body: JSON.stringify(issueContext)
         });
-        
+
         const response = await super.fetch(newRequest);
 
         logWithContext('CONTAINER', 'Container response received', {
