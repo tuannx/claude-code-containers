@@ -28,7 +28,10 @@ RUN npm install
 # Copy container source code
 COPY container_src/ ./
 
+# Build TypeScript
+RUN npm run build
+
 EXPOSE 8080
 
-# Run
-CMD ["node", "main.js"]
+# Run the compiled JavaScript
+CMD ["node", "dist/main.js"]
