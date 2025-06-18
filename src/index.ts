@@ -956,22 +956,39 @@ async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Re
   // Create GitHub API client for authenticated requests
   const githubAPI = new GitHubAPI(configDO);
 
-  // Example: Comment on issue when it's opened
+  // Handle new issue creation with Claude Code
   if (action === 'opened') {
     try {
+      // Post initial acknowledgment comment
       await githubAPI.createComment(
         repository.owner.login,
         repository.name,
         issue.number,
-        `👋 Thanks for opening this issue! Our Worker is now tracking it.`
+        `🤖 **Claude Code Assistant**\n\nI've received this issue and I'm analyzing it now. I'll start working on a solution shortly!\n\n---\n🚀 Powered by Claude Code`
       );
-      console.log(`Commented on issue #${issue.number}`);
+      console.log(`Posted initial comment on issue #${issue.number}`);
+
+      // Route to Claude Code container for processing
+      await routeToClaudeCodeContainer(issue, repository, env, configDO);
+
     } catch (error) {
-      console.error('Failed to comment on issue:', error);
+      console.error('Failed to process new issue:', error);
+      
+      // Post error comment
+      try {
+        await githubAPI.createComment(
+          repository.owner.login,
+          repository.name,
+          issue.number,
+          `❌ I encountered an error while setting up to work on this issue: ${error.message}\n\nI'll need human assistance to resolve this.`
+        );
+      } catch (commentError) {
+        console.error('Failed to post error comment:', commentError);
+      }
     }
   }
 
-  // Wake up container for issue events
+  // For other issue actions, use the standard container routing
   const containerName = `repo-${repository.id}`;
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
@@ -991,6 +1008,68 @@ async function handleIssuesEvent(data: any, env: any, configDO: any): Promise<Re
 
   return new Response('Issues event processed', { status: 200 });
 }
+
+// Route GitHub issue to Claude Code container
+async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
+  console.log(`Routing issue #${issue.number} to Claude Code container`);
+
+  // Create unique container for this issue
+  const containerName = `claude-issue-${issue.id}`;
+  const id = env.MY_CONTAINER.idFromName(containerName);
+  const container = env.MY_CONTAINER.get(id);
+
+  // Get installation token for GitHub API access
+  const tokenResponse = await configDO.fetch(new Request('http://internal/get-installation-token'));
+  const tokenData = await tokenResponse.json() as { token: string };
+
+  // Prepare environment variables for the container
+  const issueContext = {
+    ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+    GITHUB_TOKEN: tokenData.token,
+    ISSUE_ID: issue.id.toString(),
+    ISSUE_NUMBER: issue.number.toString(),
+    ISSUE_TITLE: issue.title,
+    ISSUE_BODY: issue.body || '',
+    ISSUE_LABELS: JSON.stringify(issue.labels?.map((label: any) => label.name) || []),
+    REPOSITORY_URL: repository.clone_url,
+    REPOSITORY_NAME: repository.full_name,
+    ISSUE_AUTHOR: issue.user.login,
+    MESSAGE: `Processing issue #${issue.number}: ${issue.title}`
+  };
+
+  // Create container with Claude Code environment variables
+  const claudeContainer = new MyContainer();
+  claudeContainer.envVars = {
+    ...claudeContainer.envVars,
+    ...issueContext
+  };
+
+  // Get container instance for Claude Code processing
+  const claudeId = env.MY_CONTAINER.idFromName(containerName);
+  const claudeInstance = env.MY_CONTAINER.get(claudeId);
+
+  // Start Claude Code processing by sending the issue context
+  try {
+    const response = await claudeInstance.fetch(new Request('http://internal/process-issue', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(issueContext)
+    }));
+
+    console.log(`Claude Code container response: ${response.status}`);
+    
+    if (!response.ok) {
+      throw new Error(`Container returned status ${response.status}`);
+    }
+
+  } catch (error) {
+    console.error('Failed to start Claude Code processing:', error);
+    throw error;
+  }
+}
+
 
 export class GitHubAppConfigDO {
   private storage: DurableObjectStorage;
@@ -1158,7 +1237,7 @@ export class GitHubAppConfigDO {
 
 export class MyContainer extends Container {
   defaultPort = 8080;
-  sleepAfter = '10s';
+  sleepAfter = '30m'; // Extended timeout for Claude Code processing
   envVars = {
     MESSAGE: 'I was passed in via the container class!',
   };

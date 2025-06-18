@@ -1,23 +1,26 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.24-alpine AS build
+FROM node:18-alpine AS base
+
+# Install Python, pip, and git for Claude Code dependencies
+RUN apk add --no-cache python3 py3-pip git
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
 
 # Set destination for COPY
 WORKDIR /app
 
-# Download any Go modules
-COPY container_src/go.mod ./
-RUN go mod download
+# Copy package files first for better caching
+COPY container_src/package*.json ./
+
+# Install npm dependencies
+RUN npm install
 
 # Copy container source code
-COPY container_src/*.go ./
+COPY container_src/ ./
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server
-
-FROM scratch
-COPY --from=build /server /server
 EXPOSE 8080
 
 # Run
-CMD ["/server"]
+CMD ["node", "main.js"]

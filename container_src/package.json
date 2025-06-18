@@ -1,0 +1,26 @@
+{
+  "name": "claude-code-container",
+  "version": "1.0.0",
+  "description": "Container that runs Claude Code for GitHub issue processing",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "node main.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^0.1.0",
+    "@octokit/rest": "^20.0.2",
+    "simple-git": "^3.20.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "github",
+    "automation",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT"
+}
