@@ -22,6 +22,10 @@
 			{
 				"class_name": "MyContainer",
 				"name": "MY_CONTAINER"
+			},
+			{
+				"class_name": "GitHubAppConfigDO",
+				"name": "GITHUB_APP_CONFIG"
 			}
 		]
 	},
@@ -31,6 +35,12 @@
 				"MyContainer"
 			],
 			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": [
+				"GitHubAppConfigDO"
+			],
+			"tag": "v2"
 		}
 	]
 }

@@ -32,6 +32,100 @@ interface GitHubAppData {
   webhook_secret: string;
 }
 
+// Storage Interfaces for Phase 2
+interface Repository {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+}
+
+interface GitHubAppConfig {
+  appId: string;
+  privateKey: string; // encrypted
+  webhookSecret: string; // encrypted
+  installationId?: string;
+  repositories: Repository[];
+  owner: {
+    login: string;
+    type: "User" | "Organization";
+    id: number;
+  };
+  permissions: {
+    contents: string;
+    metadata: string;
+    pull_requests: string;
+    issues: string;
+  };
+  events: string[];
+  createdAt: string;
+  lastWebhookAt?: string;
+  webhookCount: number;
+}
+
+// Encryption utilities
+async function encrypt(text: string, key?: CryptoKey): Promise<string> {
+  if (!key) {
+    // Generate a simple key from static data for now
+    // In production, this should use proper key management
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode('github-app-encryption-key-32char'),
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt']
+    );
+    key = keyMaterial;
+  }
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encodedText = new TextEncoder().encode(text);
+  
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encodedText
+  );
+
+  // Combine IV and encrypted data
+  const combined = new Uint8Array(iv.length + encrypted.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(encrypted), iv.length);
+  
+  return btoa(String.fromCharCode(...combined));
+}
+
+async function decrypt(encryptedText: string, key?: CryptoKey): Promise<string> {
+  if (!key) {
+    // Generate the same key
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode('github-app-encryption-key-32char'),
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+    key = keyMaterial;
+  }
+
+  const combined = new Uint8Array(
+    atob(encryptedText)
+      .split('')
+      .map(char => char.charCodeAt(0))
+  );
+
+  const iv = combined.slice(0, 12);
+  const encrypted = combined.slice(12);
+
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encrypted
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
   const timestamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '');
   return {
@@ -207,7 +301,7 @@ Webhook URL: ${webhookUrl}
   });
 }
 
-async function handleOAuthCallback(_request: Request, url: URL): Promise<Response> {
+async function handleOAuthCallback(_request: Request, url: URL, env: any): Promise<Response> {
   const code = url.searchParams.get('code');
   
   if (!code) {
@@ -230,8 +324,47 @@ async function handleOAuthCallback(_request: Request, url: URL): Promise<Respons
 
     const appData = await response.json() as GitHubAppData;
 
-    // TODO: Store app credentials securely (will implement in Phase 2)
-    // For now, just show success and guide to installation
+    // Store app credentials securely in Durable Object
+    try {
+      const encryptedPrivateKey = await encrypt(appData.pem);
+      const encryptedWebhookSecret = await encrypt(appData.webhook_secret);
+
+      const appConfig: GitHubAppConfig = {
+        appId: appData.id.toString(),
+        privateKey: encryptedPrivateKey,
+        webhookSecret: encryptedWebhookSecret,
+        repositories: [],
+        owner: {
+          login: appData.owner?.login || 'unknown',
+          type: 'User', // Default to User, will be updated during installation
+          id: 0 // Will be updated during installation
+        },
+        permissions: {
+          contents: 'read',
+          metadata: 'read',
+          pull_requests: 'write',
+          issues: 'write'
+        },
+        events: ['push', 'pull_request', 'issues'],
+        createdAt: new Date().toISOString(),
+        webhookCount: 0
+      };
+
+      // Store in Durable Object (using app ID as unique identifier)
+      const id = env.GITHUB_APP_CONFIG.idFromName(appData.id.toString());
+      const configDO = env.GITHUB_APP_CONFIG.get(id);
+      
+      // We need to create a simple API for the Durable Object
+      await configDO.fetch(new Request('http://internal/store', {
+        method: 'POST',
+        body: JSON.stringify(appConfig)
+      }));
+
+      console.log(`Stored GitHub App config for App ID: ${appData.id}`);
+    } catch (error) {
+      console.error('Failed to store app config:', error);
+      // Continue with the flow even if storage fails
+    }
     
     const html = `
 <!DOCTYPE html>
@@ -362,6 +495,143 @@ async function handleInstallationGuide(_request: Request, _url: URL): Promise<Re
   });
 }
 
+async function handleGitHubStatus(_request: Request, env: any): Promise<Response> {
+  const url = new URL(_request.url);
+  const appId = url.searchParams.get('app_id');
+  
+  if (!appId) {
+    return new Response(JSON.stringify({ error: 'Missing app_id parameter' }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 400
+    });
+  }
+
+  try {
+    const id = env.GITHUB_APP_CONFIG.idFromName(appId);
+    const configDO = env.GITHUB_APP_CONFIG.get(id);
+    
+    const response = await configDO.fetch(new Request('http://internal/get'));
+    const config = await response.json() as GitHubAppConfig | null;
+    
+    if (!config) {
+      return new Response(JSON.stringify({ error: 'No configuration found for this app ID' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 404
+      });
+    }
+
+    // Return safe information (without sensitive data)
+    const safeConfig = {
+      appId: config.appId,
+      owner: config.owner,
+      repositories: config.repositories,
+      permissions: config.permissions,
+      events: config.events,
+      createdAt: config.createdAt,
+      lastWebhookAt: config.lastWebhookAt,
+      webhookCount: config.webhookCount,
+      installationId: config.installationId,
+      hasCredentials: !!(config.privateKey && config.webhookSecret)
+    };
+
+    return new Response(JSON.stringify(safeConfig, null, 2), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+  } catch (error) {
+    console.error('Error fetching GitHub status:', error);
+    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 500
+    });
+  }
+}
+
+export class GitHubAppConfigDO {
+  private storage: DurableObjectStorage;
+
+  constructor(state: DurableObjectState) {
+    this.storage = state.storage;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    
+    if (url.pathname === '/store' && request.method === 'POST') {
+      const config = await request.json() as GitHubAppConfig;
+      await this.storeAppConfig(config);
+      return new Response('OK');
+    }
+    
+    if (url.pathname === '/get' && request.method === 'GET') {
+      const config = await this.getAppConfig();
+      return new Response(JSON.stringify(config));
+    }
+    
+    return new Response('Not Found', { status: 404 });
+  }
+
+  async storeAppConfig(config: GitHubAppConfig): Promise<void> {
+    await this.storage.put('github_app_config', config);
+  }
+
+  async getAppConfig(): Promise<GitHubAppConfig | null> {
+    return await this.storage.get('github_app_config') || null;
+  }
+
+  async updateInstallation(installationId: string, repositories: Repository[]): Promise<void> {
+    const config = await this.getAppConfig();
+    if (config) {
+      config.installationId = installationId;
+      config.repositories = repositories;
+      await this.storeAppConfig(config);
+    }
+  }
+
+  async logWebhook(event: string): Promise<void> {
+    const config = await this.getAppConfig();
+    if (config) {
+      config.lastWebhookAt = new Date().toISOString();
+      config.webhookCount = (config.webhookCount || 0) + 1;
+      await this.storeAppConfig(config);
+    }
+  }
+
+  async addRepository(repo: Repository): Promise<void> {
+    const config = await this.getAppConfig();
+    if (config) {
+      // Check if repository already exists
+      const exists = config.repositories.some(r => r.id === repo.id);
+      if (!exists) {
+        config.repositories.push(repo);
+        await this.storeAppConfig(config);
+      }
+    }
+  }
+
+  async removeRepository(repoId: number): Promise<void> {
+    const config = await this.getAppConfig();
+    if (config) {
+      config.repositories = config.repositories.filter(r => r.id !== repoId);
+      await this.storeAppConfig(config);
+    }
+  }
+
+  async getDecryptedCredentials(): Promise<{ privateKey: string; webhookSecret: string } | null> {
+    const config = await this.getAppConfig();
+    if (!config) return null;
+
+    try {
+      const privateKey = await decrypt(config.privateKey);
+      const webhookSecret = await decrypt(config.webhookSecret);
+      return { privateKey, webhookSecret };
+    } catch (error) {
+      console.error('Failed to decrypt credentials:', error);
+      return null;
+    }
+  }
+}
+
 export class MyContainer extends Container {
   defaultPort = 8080;
   sleepAfter = '10s';
@@ -385,7 +655,7 @@ export class MyContainer extends Container {
 export default {
   async fetch(
     request: Request,
-    env: { MY_CONTAINER: DurableObjectNamespace<MyContainer> }
+    env: any
   ): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
@@ -396,11 +666,16 @@ export default {
     }
 
     if (pathname === '/gh-setup/callback') {
-      return handleOAuthCallback(request, url);
+      return handleOAuthCallback(request, url, env);
     }
 
     if (pathname === '/gh-setup/install') {
       return handleInstallationGuide(request, url);
+    }
+
+    // Status endpoint to check stored configurations
+    if (pathname === '/gh-status') {
+      return handleGitHubStatus(request, env);
     }
 
     // To route requests to a specific container,

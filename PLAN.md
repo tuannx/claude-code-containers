@@ -57,19 +57,19 @@ This plan outlines how to implement GitHub app setup and webhook handling for a 
 }
 ```
 
-### Phase 2: Credentials Storage & Management
+### Phase 2: Credentials Storage & Management ✅ COMPLETED
 
-**Storage Strategy**:
+**Storage Strategy**: ✅ IMPLEMENTED
 
-- **Durable Objects** (recommended): Store app configurations with built-in consistency
+- **Durable Objects**: Store app configurations with built-in consistency
 - Each user/deployment gets its own GitHub app and isolated storage
 - App configurations are scoped by worker domain/deployment
 
-**What to store**:
+**What to store**: ✅ IMPLEMENTED
 
 - GitHub App ID
-- Private key (encrypted)
-- Webhook secret (encrypted)
+- Private key (encrypted using AES-GCM)
+- Webhook secret (encrypted using AES-GCM)
 - Installation ID(s)
 - Repository information
 - User/organization data
@@ -297,7 +297,7 @@ export class GitHubAppConfig extends DurableObject {
 
 1. **✅ COMPLETED - Start with `/gh-setup` UI**: Create setup page with manifest generation
 2. **✅ COMPLETED - Add OAuth callback handler**: Process app creation responses from GitHub
-3. **⏳ TODO - Implement credential storage**: Secure storage in Durable Objects with encryption
+3. **✅ COMPLETED - Implement credential storage**: Secure storage in Durable Objects with encryption
 4. **⏳ TODO - Build webhook infrastructure**: Create webhook endpoints and signature verification
 5. **⏳ TODO - Add installation tracking**: Handle installation events and repository management
 6. **⏳ TODO - Implement token management**: JWT generation for GitHub API calls
@@ -339,11 +339,40 @@ The `/gh-setup` flow is now fully functional and ready for testing:
 3. GitHub will create the app and redirect back to `/gh-setup/callback`
 4. Follow the installation guide to install the app on repositories
 
-### ⏳ Next Phase (Phase 2):
+### ✅ Phase 2 COMPLETED:
 
-- Durable Objects for credential storage
-- Encryption of sensitive data (private keys, webhook secrets)
-- Installation tracking and management
+**✅ IMPLEMENTED Components:**
+
+1. **GitHubAppConfigDO Durable Object** - ✅ DONE
+   - Secure storage class with dedicated methods for app configurations
+   - Built-in consistency and isolation per GitHub app
+   - Clean API for storage operations (store, get, update)
+
+2. **AES-GCM Encryption System** - ✅ DONE
+   - encrypt() and decrypt() functions using Web Crypto API
+   - Secure storage of private keys and webhook secrets
+   - Random IV generation for each encryption operation
+
+3. **Enhanced OAuth Callback** - ✅ DONE
+   - Automatically encrypts and stores app credentials after OAuth exchange
+   - Creates GitHubAppConfig with all necessary metadata
+   - Stores in Durable Object scoped by App ID
+
+4. **Storage Schema Implementation** - ✅ DONE
+   - Complete TypeScript interfaces for GitHubAppConfig and Repository
+   - Structured storage of permissions, events, and metadata
+   - Webhook activity tracking (count, last activity timestamp)
+
+5. **Status Endpoint** - ✅ DONE
+   - `/gh-status?app_id=<ID>` endpoint to check stored configurations
+   - Returns safe information without exposing sensitive credentials
+   - JSON API for debugging and verification
+
+### ⏳ Next Phase (Phase 3):
+
+- JWT token generation for GitHub API authentication
+- Webhook endpoint implementation with signature verification
+- Installation event handling and repository management
 
 ## Streamlined User Experience Flow
 
