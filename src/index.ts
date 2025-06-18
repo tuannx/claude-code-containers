@@ -127,7 +127,7 @@ async function decrypt(encryptedText: string, key?: CryptoKey): Promise<string> 
 }
 
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
-  const timestamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '');
+  const timestamp = new Date().toISOString().split('T')[1].replace(/:/g, '');
   return {
     name: `Worker GitHub Integration - ${timestamp}`,
     url: workerDomain,
@@ -602,10 +602,22 @@ async function handleGitHubWebhook(request: Request, env: any): Promise<Response
     let appId: string | undefined;
     
     if (webhookData.installation?.app_id) {
+      // Installation events include app_id directly
       appId = webhookData.installation.app_id.toString();
+    } else if (webhookData.installation?.id) {
+      // For other events, we need to look up the app ID by installation ID
+      // Since we only have one app per worker deployment, we can check our known app
+      // For now, use the app ID from the header
+      const hookInstallationTargetId = request.headers.get('x-github-hook-installation-target-id');
+      if (hookInstallationTargetId) {
+        appId = hookInstallationTargetId;
+      } else {
+        console.log('Cannot determine app ID from webhook payload or headers');
+        return new Response('Cannot determine app ID', { status: 400 });
+      }
     } else {
-      console.log('Cannot determine app ID from webhook payload');
-      return new Response('Cannot determine app ID', { status: 400 });
+      console.log('No installation information in webhook payload');
+      return new Response('No installation information', { status: 400 });
     }
 
     // Get app configuration and decrypt webhook secret
@@ -853,22 +865,18 @@ export class GitHubAppConfigDO {
     }
     
     if (url.pathname === '/log-webhook' && request.method === 'POST') {
-      const body = await request.json() as { event: string; delivery: string; timestamp: string };
-      await this.logWebhook(body.event);
+      const { event, delivery, timestamp } = await request.json();
+      await this.logWebhook(event);
       return new Response('OK');
     }
     
     if (url.pathname === '/update-installation' && request.method === 'POST') {
-      const body = await request.json() as { 
-        installationId: string; 
-        repositories: Repository[]; 
-        owner: { login: string; type: "User" | "Organization"; id: number }
-      };
-      await this.updateInstallation(body.installationId, body.repositories);
+      const { installationId, repositories, owner } = await request.json();
+      await this.updateInstallation(installationId, repositories);
       // Also update owner information
       const config = await this.getAppConfig();
       if (config) {
-        config.owner = body.owner;
+        config.owner = owner;
         await this.storeAppConfig(config);
       }
       return new Response('OK');
