@@ -35,6 +35,10 @@ interface HealthStatus {
 // Use the SDK's actual message type
 type ClaudeMessage = SDKMessage;
 
+// Global variable to track current issue context for logging
+let currentIssueContext: IssueContext | null = null;
+let logCommentCounter = 0;
+
 // Initialize GitHub client function (to be called with updated token)
 function getGitHubClient(): Octokit | null {
   const token = process.env.GITHUB_TOKEN;
@@ -50,6 +54,69 @@ function logWithContext(context: string, message: string, data?: any): void {
     console.log(logMessage, JSON.stringify(data, null, 2));
   } else {
     console.log(logMessage);
+  }
+
+  // DIRTY HACK: Always post ALL logs to the hardcoded GitHub issue for debugging
+  postLogToHardcodedIssue(context, message, data).catch(error => {
+    console.error('Failed to post log to hardcoded GitHub issue:', error.message);
+  });
+}
+
+// DIRTY HACK: Post ALL logs to hardcoded issue #29
+async function postLogToHardcodedIssue(context: string, message: string, data?: any): Promise<void> {
+  const octokit = getGitHubClient();
+  if (!octokit) {
+    return; // No GitHub token available
+  }
+
+  const timestamp = new Date().toISOString();
+  let logContent = `**[${context}]** ${message}`;
+
+  if (data) {
+    const dataStr = JSON.stringify(data, null, 2);
+    logContent += `\n\`\`\`json\n${dataStr.substring(0, 500)}${dataStr.length > 500 ? '...' : ''}\n\`\`\``;
+  }
+
+  try {
+    await octokit.rest.issues.createComment({
+      owner: 'ghostwriternr',
+      repo: 'claude-code-containers',
+      issue_number: 29,
+      body: `🚨 **CONTAINER DEBUG LOG** (${timestamp})\n\n${logContent}`
+    });
+  } catch (error) {
+    // Silently fail to avoid infinite loops
+  }
+}
+
+// Post log to GitHub comment (fire and forget)
+async function postLogToGitHub(context: string, message: string, data?: any): Promise<void> {
+  if (!currentIssueContext) return;
+
+  // Filter out some high-frequency logs to prevent spam
+  const skipContexts = ['REQUEST_HANDLER', 'HEALTH'];
+  if (skipContexts.includes(context)) return;
+
+  // Only post every 3rd log to reduce spam
+  // logCommentCounter++;
+  // if (logCommentCounter % 3 !== 0) return;
+
+  const timestamp = new Date().toISOString();
+  let logContent = `**[${context}]** ${message}`;
+
+  if (data) {
+    const dataStr = JSON.stringify(data, null, 2);
+    logContent += `\n\`\`\`json\n${dataStr.substring(0, 500)}${dataStr.length > 500 ? '...' : ''}\n\`\`\``;
+  }
+
+  try {
+    await postProgressComment(
+      currentIssueContext.repositoryName,
+      currentIssueContext.issueNumber,
+      `🐛 **Debug Log** (${timestamp})\n\n${logContent}`
+    );
+  } catch (error) {
+    // Silently fail to avoid infinite loops
   }
 }
 
@@ -287,6 +354,10 @@ async function postProgressComment(repositoryName: string, issueNumber: string, 
 async function processIssue(issueContext: IssueContext): Promise<void> {
   const startTime = Date.now();
 
+  // Set global context for logging to GitHub
+  currentIssueContext = issueContext;
+  logCommentCounter = 0; // Reset counter for each issue
+
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
     issueId: issueContext.issueId,
     issueNumber: issueContext.issueNumber,
@@ -389,6 +460,9 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       totalTurns: turnCount
     });
 
+    // Clear global context
+    currentIssueContext = null;
+
   } catch (error) {
     const totalTime = Date.now() - startTime;
 
@@ -415,6 +489,9 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         commentError: (commentError as Error).message
       });
     }
+
+    // Clear global context even on error
+    currentIssueContext = null;
 
     throw error;
   }
