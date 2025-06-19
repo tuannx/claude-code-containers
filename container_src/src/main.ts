@@ -336,12 +336,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
     try {
       const claudeStartTime = Date.now();
 
-      for await (const message of query({
-        prompt,
-        options: {
-          maxTurns: 5
-        }
-      })) {
+      for await (const message of query({ prompt })) {
         turnCount++;
         results.push(message);
 
@@ -350,7 +345,6 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
           type: message.type,
           messagePreview: JSON.stringify(message).substring(0, 200) + '...',
           turnCount,
-          totalTurns: 5
         });
 
         // Stream progress back to GitHub for assistant messages
@@ -365,7 +359,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
           await postProgressComment(
             issueContext.repositoryName,
             issueContext.issueNumber,
-            `Working on the solution... (Turn ${turnCount}/5)\n\n${messageText.substring(0, 500)}${messageText.length > 500 ? '...' : ''}`
+            `Working on the solution... (Turn ${turnCount})\n\n${messageText.substring(0, 500)}${messageText.length > 500 ? '...' : ''}`
           );
         }
       }
