@@ -1,6 +1,7 @@
 import { GitHubAPI } from "../../github_client";
 import { logWithContext } from "../../log";
 import { containerFetch, getRouteFromRequest } from "../../fetch";
+import { PRCreator, ContainerResponse } from "./pr_creator";
 
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
@@ -92,10 +93,52 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
       throw new Error(`Container returned status ${response.status}: ${errorText}`);
     }
 
-    logWithContext('CLAUDE_ROUTING', 'Claude Code processing started successfully');
+    // Parse container response
+    const containerResponse: ContainerResponse = await response.json();
+    
+    logWithContext('CLAUDE_ROUTING', 'Container response parsed', {
+      success: containerResponse.success,
+      hasFileChanges: containerResponse.hasFileChanges,
+      hasPRSummary: !!containerResponse.prSummary,
+      hasError: !!containerResponse.error
+    });
+
+    // Create GitHub API client and PR creator
+    const githubAPI = new GitHubAPI(configDO);
+    const prCreator = new PRCreator(githubAPI);
+
+    // Handle the container response - create PR if needed or post comment
+    const prResult = await prCreator.handleContainerResponse(
+      repository.owner.login,
+      repository.name,
+      issue.number,
+      containerResponse,
+      [] // TODO: Extract files from container workspace in future enhancement
+    );
+
+    logWithContext('CLAUDE_ROUTING', 'PR creator result', {
+      success: prResult.success,
+      prUrl: prResult.prUrl,
+      prNumber: prResult.prNumber,
+      fallbackCommentPosted: prResult.fallbackCommentPosted,
+      error: prResult.error
+    });
+
+    if (prResult.success && prResult.prUrl) {
+      logWithContext('CLAUDE_ROUTING', 'Pull request created successfully', {
+        prUrl: prResult.prUrl,
+        prNumber: prResult.prNumber
+      });
+    } else if (prResult.fallbackCommentPosted) {
+      logWithContext('CLAUDE_ROUTING', 'Fallback comment posted successfully');
+    } else {
+      logWithContext('CLAUDE_ROUTING', 'Failed to create PR or post comment', {
+        error: prResult.error
+      });
+    }
 
   } catch (error) {
-    logWithContext('CLAUDE_ROUTING', 'Failed to start Claude Code processing', {
+    logWithContext('CLAUDE_ROUTING', 'Failed to process Claude Code response', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined
     });

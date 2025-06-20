@@ -27,7 +27,7 @@ export async function containerFetch(
   request: Request,
   options: ContainerFetchOptions = {}
 ): Promise<Response> {
-  const { containerName = 'unknown', route = 'unknown', timeout = 30000, env } = options;
+  const { containerName = 'unknown', route = 'unknown', timeout = 300000, env } = options;
   const startTime = Date.now();
   
   // Check if hack is enabled
@@ -64,8 +64,6 @@ export async function containerFetch(
         method: request.method,
         headers: request.headers,
         body: request.body,
-        // @ts-ignore - duplex might not be in all environments
-        duplex: 'half'
       });
       
       // Create a timeout promise

@@ -1,4 +1,6 @@
-# Containers Starter
+# 🚀 Containers Starter
+
+A Cloudflare Workers Container template with GitHub integration and automated issue processing using Claude Code.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ghostwriternr/claude-code-containers)
 

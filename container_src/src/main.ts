@@ -8,6 +8,16 @@ import { spawn } from 'child_process';
 
 const PORT = 8080;
 
+// Container response interface for PR creation
+interface ContainerResponse {
+  success: boolean;
+  solution: string;
+  hasFileChanges: boolean;
+  prSummary?: string;
+  commitSha?: string;
+  error?: string;
+}
+
 // Environment variables
 const MESSAGE = process.env.MESSAGE || 'Hello from Claude Code Container';
 const INSTANCE_ID = process.env.CLOUDFLARE_DEPLOYMENT_ID || 'unknown';
@@ -199,12 +209,7 @@ async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promi
     });
 
     // Initialize git in the workspace for potential commits
-    const git = simpleGit(workspaceDir);
-    await git.init();
-    await git.addConfig('user.name', 'Claude Code Bot');
-    await git.addConfig('user.email', 'claude-code@anthropic.com');
-
-    logWithContext('WORKSPACE', 'Git repository initialized');
+    await initializeGitWorkspace(workspaceDir);
 
     return workspaceDir;
   } catch (error) {
@@ -215,6 +220,105 @@ async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promi
       workspaceDir
     });
     throw error;
+  }
+}
+
+// Initialize git workspace with baseline commit
+async function initializeGitWorkspace(workspaceDir: string): Promise<void> {
+  logWithContext('GIT_WORKSPACE', 'Initializing git workspace', { workspaceDir });
+  
+  const git = simpleGit(workspaceDir);
+  
+  try {
+    await git.init();
+    await git.addConfig('user.name', 'Claude Code Bot');
+    await git.addConfig('user.email', 'claude-code@anthropic.com');
+    
+    // Add all files and create initial commit
+    await git.add('.');
+    await git.commit('Initial commit - baseline repository state');
+    
+    logWithContext('GIT_WORKSPACE', 'Git workspace initialized with baseline commit');
+  } catch (error) {
+    logWithContext('GIT_WORKSPACE', 'Error initializing git workspace', {
+      error: (error as Error).message
+    });
+    throw error;
+  }
+}
+
+// Detect if there are any git changes
+async function detectGitChanges(workspaceDir: string): Promise<boolean> {
+  logWithContext('GIT_WORKSPACE', 'Detecting git changes', { workspaceDir });
+  
+  const git = simpleGit(workspaceDir);
+  
+  try {
+    const status = await git.status();
+    const hasChanges = status.files.length > 0 || status.not_added.length > 0 || status.created.length > 0 || status.deleted.length > 0 || status.modified.length > 0;
+    
+    logWithContext('GIT_WORKSPACE', 'Git change detection result', {
+      hasChanges,
+      filesChanged: status.files.length,
+      notAdded: status.not_added.length,
+      created: status.created.length,
+      deleted: status.deleted.length,
+      modified: status.modified.length
+    });
+    
+    return hasChanges;
+  } catch (error) {
+    logWithContext('GIT_WORKSPACE', 'Error detecting git changes', {
+      error: (error as Error).message
+    });
+    return false;
+  }
+}
+
+// Commit changes and return commit SHA
+async function commitChanges(workspaceDir: string, message: string): Promise<string> {
+  logWithContext('GIT_WORKSPACE', 'Committing changes', { workspaceDir, message });
+  
+  const git = simpleGit(workspaceDir);
+  
+  try {
+    // Add all changes
+    await git.add('.');
+    
+    // Commit changes
+    const result = await git.commit(message);
+    const commitSha = result.commit;
+    
+    logWithContext('GIT_WORKSPACE', 'Changes committed successfully', {
+      commitSha,
+      summary: result.summary
+    });
+    
+    return commitSha;
+  } catch (error) {
+    logWithContext('GIT_WORKSPACE', 'Error committing changes', {
+      error: (error as Error).message
+    });
+    throw error;
+  }
+}
+
+// Read PR summary from .claude-pr-summary.md file
+async function readPRSummary(workspaceDir: string): Promise<string | null> {
+  const summaryPath = path.join(workspaceDir, '.claude-pr-summary.md');
+  
+  try {
+    const content = await fs.readFile(summaryPath, 'utf8');
+    logWithContext('GIT_WORKSPACE', 'PR summary read successfully', {
+      contentLength: content.length
+    });
+    return content.trim();
+  } catch (error) {
+    logWithContext('GIT_WORKSPACE', 'No PR summary file found or error reading', {
+      summaryPath,
+      error: (error as Error).message
+    });
+    return null;
   }
 }
 
@@ -235,6 +339,8 @@ The repository has been cloned to your current working directory. Please:
 3. Implement a solution that addresses the issue
 4. Write appropriate tests if needed
 5. Ensure code quality and consistency with existing patterns
+
+**IMPORTANT: If you make any file changes, please create a file called '.claude-pr-summary.md' in the root directory with a concise summary (1-3 sentences) of what changes you made and why. This will be used for the pull request description.**
 
 Work step by step and provide clear explanations of your approach.
 `;
@@ -340,8 +446,8 @@ async function postProgressComment(repositoryName: string, issueNumber: string, 
   }
 }
 
-// Process issue with Claude Code
-async function processIssue(issueContext: IssueContext): Promise<void> {
+// Process issue with Claude Code and return structured response
+async function processIssue(issueContext: IssueContext): Promise<ContainerResponse> {
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
     repositoryName: issueContext.repositoryName,
     issueNumber: issueContext.issueNumber,
@@ -352,9 +458,10 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
   let turnCount = 0;
 
   try {
-    // 1. Create workspace directory
-    const workspaceDir = `/tmp/workspace_${Date.now()}`;
-    logWithContext('ISSUE_PROCESSOR', 'Creating workspace directory', {
+    // 1. Setup workspace with repository download and git initialization
+    const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
+    
+    logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
       workspaceDir
     });
 
@@ -364,7 +471,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       promptLength: prompt.length
     });
 
-    // 3. Query Claude Code
+    // 3. Query Claude Code in the workspace directory
     logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code query');
 
     try {
@@ -380,7 +487,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         // Log message details (message structure depends on SDK version)
         logWithContext('CLAUDE_CODE', `Turn ${turnCount} completed`, {
           type: message.type,
-          messagePreview: JSON.stringify(message),
+          messagePreview: JSON.stringify(message).substring(0, 200),
           turnCount,
         });
       }
@@ -394,24 +501,49 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         resultsCount: results.length
       });
 
-      // 4. Post final result as single comment
+      // 4. Check for file changes using git
+      const hasChanges = await detectGitChanges(workspaceDir);
+      logWithContext('ISSUE_PROCESSOR', 'Change detection completed', { hasChanges });
+
+      let commitSha: string | undefined;
+      let prSummary: string | undefined = undefined;
+
+      if (hasChanges) {
+        // Commit the changes
+        commitSha = await commitChanges(workspaceDir, `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`);
+        
+        // Try to read PR summary
+        const prSummaryResult = await readPRSummary(workspaceDir);
+        prSummary = prSummaryResult || undefined;
+        
+        logWithContext('ISSUE_PROCESSOR', 'Changes committed', {
+          commitSha,
+          hasPRSummary: !!prSummary
+        });
+      }
+
+      // 5. Prepare response with solution text
+      let solution = '';
       if (results.length > 0) {
         const lastResult = results[results.length - 1];
-        const messageText = getMessageText(lastResult);
-
-        if (messageText) {
-          // Post final summary comment
-          logWithContext('FINAL_PROCESSOR', 'Posting final summary comment');
-
-          await postProgressComment(
-            issueContext.repositoryName,
-            issueContext.issueNumber,
-            `${messageText}\n\n---\n🤖 Generated with Claude Code`
-          );
-
-          logWithContext('FINAL_PROCESSOR', 'Final summary comment posted');
-        }
+        solution = getMessageText(lastResult);
       }
+
+      const response: ContainerResponse = {
+        success: true,
+        solution,
+        hasFileChanges: hasChanges,
+        prSummary,
+        commitSha
+      };
+
+      logWithContext('ISSUE_PROCESSOR', 'Issue processing completed successfully', {
+        hasFileChanges: response.hasFileChanges,
+        solutionLength: response.solution.length,
+        hasPRSummary: !!response.prSummary
+      });
+
+      return response;
 
     } catch (claudeError) {
       logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
@@ -431,24 +563,12 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       resultsCount: results.length
     });
 
-    // Post error comment to GitHub
-    try {
-      logWithContext('ISSUE_PROCESSOR', 'Posting error comment to GitHub');
-
-      await postProgressComment(
-        issueContext.repositoryName,
-        issueContext.issueNumber,
-        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
-      );
-
-      logWithContext('ISSUE_PROCESSOR', 'Error comment posted successfully');
-    } catch (commentError) {
-      logWithContext('ISSUE_PROCESSOR', 'Failed to post error comment', {
-        commentError: (commentError as Error).message
-      });
-    }
-
-    throw error;
+    return {
+      success: false,
+      solution: '',
+      hasFileChanges: false,
+      error: (error as Error).message
+    };
   }
 }
 
@@ -554,26 +674,35 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
     labelsCount: issueContext.labels.length
   });
 
-  // Start processing asynchronously
-  processIssue(issueContext).catch(error => {
-    logWithContext('ISSUE_HANDLER', 'Async issue processing failed', {
+  // Process issue and return structured response
+  try {
+    const containerResponse = await processIssue(issueContext);
+    
+    logWithContext('ISSUE_HANDLER', 'Issue processing completed', {
+      success: containerResponse.success,
+      hasFileChanges: containerResponse.hasFileChanges,
+      hasPRSummary: !!containerResponse.prSummary,
+      hasError: !!containerResponse.error
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(containerResponse));
+  } catch (error) {
+    logWithContext('ISSUE_HANDLER', 'Issue processing failed', {
       error: error instanceof Error ? error.message : String(error),
       issueId: issueContext.issueId
     });
-  });
 
-  // Return immediate response
-  const responseData = {
-    status: 'processing',
-    message: 'Issue processing started',
-    issueNumber: process.env.ISSUE_NUMBER,
-    timestamp: new Date().toISOString()
-  };
+    const errorResponse: ContainerResponse = {
+      success: false,
+      solution: '',
+      hasFileChanges: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
 
-  logWithContext('ISSUE_HANDLER', 'Returning immediate response', responseData);
-
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(responseData));
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(errorResponse));
+  }
 }
 
 // Route handler

@@ -13,7 +13,7 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
     setup_url: `${workerDomain}/gh-setup/install`,
     public: false,
     default_permissions: {
-      contents: 'read',
+      contents: 'write',
       metadata: 'read',
       pull_requests: 'write',
       issues: 'write'
