@@ -5,6 +5,7 @@ export interface ContainerResponse {
   success: boolean;
   solution: string;
   hasFileChanges: boolean;
+  changedFiles?: Array<{ path: string; content: string }>;
   prSummary?: string;
   commitSha?: string;
   error?: string;

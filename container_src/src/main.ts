@@ -1,7 +1,6 @@
 import * as http from 'http';
 import { promises as fs } from 'fs';
 import { query, type SDKMessage } from '@anthropic-ai/claude-code';
-import { Octokit } from '@octokit/rest';
 import simpleGit from 'simple-git';
 import * as path from 'path';
 import { spawn } from 'child_process';
@@ -13,6 +12,7 @@ interface ContainerResponse {
   success: boolean;
   solution: string;
   hasFileChanges: boolean;
+  changedFiles?: Array<{ path: string; content: string }>;
   prSummary?: string;
   commitSha?: string;
   error?: string;
@@ -43,14 +43,7 @@ interface HealthStatus {
   githubTokenAvailable: boolean;
 }
 
-// Use the SDK's actual message type
-type ClaudeMessage = SDKMessage;
 
-// Initialize GitHub client function (to be called with updated token)
-function getGitHubClient(): Octokit | null {
-  const token = process.env.GITHUB_TOKEN;
-  return token ? new Octokit({ auth: token }) : null;
-}
 
 // Enhanced logging utility with context
 function logWithContext(context: string, message: string, data?: any): void {
@@ -93,123 +86,80 @@ async function errorHandler(_req: http.IncomingMessage, _res: http.ServerRespons
   throw new Error('This is a test error from the container');
 }
 
-// Setup isolated workspace for issue processing using GitHub API
+// Setup isolated workspace for issue processing using proper git clone
 async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promise<string> {
   const workspaceDir = `/tmp/workspace/issue-${issueNumber}`;
 
-  logWithContext('WORKSPACE', 'Setting up workspace', {
+  logWithContext('WORKSPACE', 'Setting up workspace with git clone', {
     workspaceDir,
     repositoryUrl,
     issueNumber
   });
 
   try {
-    // Create workspace directory
-    await fs.mkdir(workspaceDir, { recursive: true });
-    logWithContext('WORKSPACE', 'Workspace directory created');
+    // Create parent workspace directory
+    await fs.mkdir(path.dirname(workspaceDir), { recursive: true });
+    logWithContext('WORKSPACE', 'Parent workspace directory created');
 
-    // Extract owner and repo from URL
-    const urlMatch = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
-    if (!urlMatch) {
-      throw new Error('Invalid GitHub repository URL');
+    const cloneStartTime = Date.now();
+
+    // Get GitHub token for authenticated cloning
+    const githubToken = process.env.GITHUB_TOKEN;
+    if (!githubToken) {
+      throw new Error('GitHub token not available for cloning');
     }
 
-    const owner = urlMatch[1];
-    const repo = urlMatch[2].replace('.git', '');
+    // Construct authenticated clone URL
+    const authenticatedUrl = repositoryUrl.replace(
+      'https://github.com/',
+      `https://x-access-token:${githubToken}@github.com/`
+    );
 
-    logWithContext('WORKSPACE', 'Parsed repository info', { owner, repo });
+    logWithContext('WORKSPACE', 'Starting git clone');
 
-    // Download repository content using GitHub API
-    const octokit = getGitHubClient();
-    if (!octokit) {
-      throw new Error('GitHub token not available');
-    }
-
-    const downloadStartTime = Date.now();
-
-    // Get the default branch
-    logWithContext('WORKSPACE', 'Getting repository metadata');
-    const repoInfo = await octokit.rest.repos.get({ owner, repo });
-    const defaultBranch = repoInfo.data.default_branch;
-
-    logWithContext('WORKSPACE', 'Repository metadata retrieved', {
-      defaultBranch,
-      isPrivate: repoInfo.data.private
-    });
-
-    // Download repository archive
-    logWithContext('WORKSPACE', 'Downloading repository archive');
-    const archiveResponse = await octokit.rest.repos.downloadZipballArchive({
-      owner,
-      repo,
-      ref: defaultBranch
-    });
-
-    // Save archive to temporary file
-    const archivePath = `/tmp/repo-${issueNumber}.zip`;
-    await fs.writeFile(archivePath, Buffer.from(archiveResponse.data as ArrayBuffer));
-
-    logWithContext('WORKSPACE', 'Archive downloaded and saved', {
-      archivePath,
-      sizeBytes: Buffer.from(archiveResponse.data as ArrayBuffer).length
-    });
-
-    // Extract archive using unzip command (assuming it's available in container)
+    // Clone repository using git command
     await new Promise<void>((resolve, reject) => {
-      const unzipProcess = spawn('unzip', ['-q', archivePath, '-d', workspaceDir], {
+      const gitProcess = spawn('git', ['clone', authenticatedUrl, workspaceDir], {
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
+      let stdout = '';
       let stderr = '';
-      unzipProcess.stderr.on('data', (data: Buffer) => {
+
+      gitProcess.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      gitProcess.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
       });
 
-      unzipProcess.on('close', (code: number) => {
+      gitProcess.on('close', (code: number) => {
         if (code === 0) {
-          logWithContext('WORKSPACE', 'Archive extracted successfully');
+          logWithContext('WORKSPACE', 'Git clone completed successfully', {
+            stdout: stdout.substring(0, 200),
+            stderr: stderr.substring(0, 200)
+          });
           resolve();
         } else {
-          logWithContext('WORKSPACE', 'Archive extraction failed', {
+          logWithContext('WORKSPACE', 'Git clone failed', {
             code,
+            stdout,
             stderr
           });
-          reject(new Error(`Unzip failed with code ${code}: ${stderr}`));
+          reject(new Error(`Git clone failed with code ${code}: ${stderr}`));
         }
       });
     });
 
-    // Find the extracted directory (GitHub creates a directory with commit hash)
-    const entries = await fs.readdir(workspaceDir);
-    const extractedDir = entries.find(entry => entry.startsWith(`${owner}-${repo}-`));
+    const cloneTime = Date.now() - cloneStartTime;
 
-    if (!extractedDir) {
-      throw new Error('Could not find extracted repository directory');
-    }
-
-    const extractedPath = path.join(workspaceDir, extractedDir);
-
-    // Move contents to workspace root
-    const contentEntries = await fs.readdir(extractedPath);
-    for (const entry of contentEntries) {
-      const srcPath = path.join(extractedPath, entry);
-      const destPath = path.join(workspaceDir, entry);
-      await fs.rename(srcPath, destPath);
-    }
-
-    // Remove the now-empty extracted directory and archive
-    await fs.rmdir(extractedPath);
-    await fs.unlink(archivePath);
-
-    const downloadTime = Date.now() - downloadStartTime;
-
-    logWithContext('WORKSPACE', 'Repository downloaded and extracted successfully', {
-      downloadTimeMs: downloadTime,
-      filesExtracted: contentEntries.length
-    });
-
-    // Initialize git in the workspace for potential commits
+    // Initialize git workspace for our workflow
     await initializeGitWorkspace(workspaceDir);
+
+    logWithContext('WORKSPACE', 'Git repository cloned and configured successfully', {
+      cloneTimeMs: cloneTime
+    });
 
     return workspaceDir;
   } catch (error) {
@@ -223,49 +173,63 @@ async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promi
   }
 }
 
-// Initialize git workspace with baseline commit
+// Initialize git workspace for proper developer workflow
 async function initializeGitWorkspace(workspaceDir: string): Promise<void> {
-  logWithContext('GIT_WORKSPACE', 'Initializing git workspace', { workspaceDir });
-  
+  logWithContext('GIT_WORKSPACE', 'Configuring git workspace for development', { workspaceDir });
+
   const git = simpleGit(workspaceDir);
-  
+
   try {
-    await git.init();
+    // Configure git user (this is already a cloned repo, so no need to init)
     await git.addConfig('user.name', 'Claude Code Bot');
     await git.addConfig('user.email', 'claude-code@anthropic.com');
-    
-    // Add all files and create initial commit
-    await git.add('.');
-    await git.commit('Initial commit - baseline repository state');
-    
-    logWithContext('GIT_WORKSPACE', 'Git workspace initialized with baseline commit');
+
+    // Fetch latest changes to ensure we're up to date
+    await git.fetch('origin');
+
+    // Get current branch info
+    const status = await git.status();
+    const currentBranch = status.current;
+
+    logWithContext('GIT_WORKSPACE', 'Git workspace configured', {
+      currentBranch,
+      isClean: status.isClean(),
+      ahead: status.ahead,
+      behind: status.behind
+    });
+
+    // Ensure we're on the latest default branch
+    if (status.behind > 0) {
+      logWithContext('GIT_WORKSPACE', 'Pulling latest changes from remote');
+      await git.pull('origin', currentBranch || 'main');
+    }
+
   } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error initializing git workspace', {
+    logWithContext('GIT_WORKSPACE', 'Error configuring git workspace', {
       error: (error as Error).message
     });
     throw error;
   }
 }
 
-// Detect if there are any git changes
+// Detect if there are any git changes from the default branch
 async function detectGitChanges(workspaceDir: string): Promise<boolean> {
   logWithContext('GIT_WORKSPACE', 'Detecting git changes', { workspaceDir });
-  
+
   const git = simpleGit(workspaceDir);
-  
+
   try {
     const status = await git.status();
-    const hasChanges = status.files.length > 0 || status.not_added.length > 0 || status.created.length > 0 || status.deleted.length > 0 || status.modified.length > 0;
-    
+    const hasChanges = !status.isClean();
+
     logWithContext('GIT_WORKSPACE', 'Git change detection result', {
       hasChanges,
-      filesChanged: status.files.length,
-      notAdded: status.not_added.length,
-      created: status.created.length,
-      deleted: status.deleted.length,
-      modified: status.modified.length
+      isClean: status.isClean(),
+      files: status.files.map(f => ({ file: f.path, status: f.working_dir })),
+      ahead: status.ahead,
+      behind: status.behind
     });
-    
+
     return hasChanges;
   } catch (error) {
     logWithContext('GIT_WORKSPACE', 'Error detecting git changes', {
@@ -275,38 +239,90 @@ async function detectGitChanges(workspaceDir: string): Promise<boolean> {
   }
 }
 
-// Commit changes and return commit SHA
-async function commitChanges(workspaceDir: string, message: string): Promise<string> {
-  logWithContext('GIT_WORKSPACE', 'Committing changes', { workspaceDir, message });
-  
+// Create feature branch, commit changes, and return commit SHA
+async function createFeatureBranchAndCommit(workspaceDir: string, branchName: string, message: string): Promise<string> {
+  logWithContext('GIT_WORKSPACE', 'Creating feature branch and committing changes', {
+    workspaceDir,
+    branchName,
+    message
+  });
+
   const git = simpleGit(workspaceDir);
-  
+
   try {
+    // Create and checkout new feature branch
+    await git.checkoutLocalBranch(branchName);
+    logWithContext('GIT_WORKSPACE', 'Feature branch created and checked out', { branchName });
+
     // Add all changes
     await git.add('.');
-    
+
     // Commit changes
     const result = await git.commit(message);
     const commitSha = result.commit;
-    
-    logWithContext('GIT_WORKSPACE', 'Changes committed successfully', {
+
+    logWithContext('GIT_WORKSPACE', 'Changes committed to feature branch', {
       commitSha,
+      branchName,
       summary: result.summary
     });
-    
+
     return commitSha;
   } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error committing changes', {
-      error: (error as Error).message
+    logWithContext('GIT_WORKSPACE', 'Error creating branch and committing changes', {
+      error: (error as Error).message,
+      branchName
     });
     throw error;
+  }
+}
+
+// Get list of changed files from git
+async function getChangedFiles(workspaceDir: string): Promise<Array<{ path: string; content: string }>> {
+  logWithContext('GIT_WORKSPACE', 'Getting changed files from git', { workspaceDir });
+
+  const git = simpleGit(workspaceDir);
+  const changedFiles: Array<{ path: string; content: string }> = [];
+
+  try {
+    const status = await git.status();
+
+    // Get all modified, added, and renamed files
+    const filePaths = status.files.map(file => file.path);
+
+    logWithContext('GIT_WORKSPACE', 'Found changed files', {
+      fileCount: filePaths.length,
+      files: filePaths
+    });
+
+    // Read content of each changed file
+    for (const filePath of filePaths) {
+      try {
+        const fullPath = path.join(workspaceDir, filePath);
+        const content = await fs.readFile(fullPath, 'utf8');
+        changedFiles.push({ path: filePath, content });
+      } catch (error) {
+        logWithContext('GIT_WORKSPACE', 'Error reading changed file', {
+          filePath,
+          error: (error as Error).message
+        });
+        // Skip files that can't be read (binary, deleted, etc.)
+      }
+    }
+
+    return changedFiles;
+  } catch (error) {
+    logWithContext('GIT_WORKSPACE', 'Error getting changed files', {
+      error: (error as Error).message
+    });
+    return [];
   }
 }
 
 // Read PR summary from .claude-pr-summary.md file
 async function readPRSummary(workspaceDir: string): Promise<string | null> {
   const summaryPath = path.join(workspaceDir, '.claude-pr-summary.md');
-  
+
   try {
     const content = await fs.readFile(summaryPath, 'utf8');
     logWithContext('GIT_WORKSPACE', 'PR summary read successfully', {
@@ -346,105 +362,6 @@ Work step by step and provide clear explanations of your approach.
 `;
 }
 
-// Post progress comment to GitHub
-async function postProgressComment(repositoryName: string, issueNumber: string, message: string, commentId?: number, append: boolean = false): Promise<number | undefined> {
-  const octokit = getGitHubClient();
-  if (!octokit) {
-    logWithContext('GITHUB_COMMENT', 'GitHub token not available, skipping comment');
-    return;
-  }
-
-  try {
-    const [owner, repo] = repositoryName.split('/');
-
-    if (commentId && append) {
-      // Get existing comment and append to it
-      logWithContext('GITHUB_COMMENT', 'Appending to existing progress comment', {
-        owner,
-        repo,
-        issueNumber,
-        commentId,
-        messageLength: message.length
-      });
-
-      // First get the existing comment
-      const existingComment = await octokit.rest.issues.getComment({
-        owner,
-        repo,
-        comment_id: commentId
-      });
-
-      const updatedBody = `${existingComment.data.body}\n\n${message}`;
-
-      const response = await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: commentId,
-        body: updatedBody
-      });
-
-      logWithContext('GITHUB_COMMENT', 'Progress comment appended successfully', {
-        commentId: response.data.id,
-        commentUrl: response.data.html_url
-      });
-
-      return response.data.id;
-    } else if (commentId) {
-      // Update existing comment (replace)
-      logWithContext('GITHUB_COMMENT', 'Updating existing progress comment', {
-        owner,
-        repo,
-        issueNumber,
-        commentId,
-        messageLength: message.length
-      });
-
-      const response = await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: commentId,
-        body: message
-      });
-
-      logWithContext('GITHUB_COMMENT', 'Progress comment updated successfully', {
-        commentId: response.data.id,
-        commentUrl: response.data.html_url
-      });
-
-      return response.data.id;
-    } else {
-      // Create new comment
-      logWithContext('GITHUB_COMMENT', 'Creating new progress comment', {
-        owner,
-        repo,
-        issueNumber,
-        messageLength: message.length
-      });
-
-      const response = await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: parseInt(issueNumber),
-        body: message
-      });
-
-      logWithContext('GITHUB_COMMENT', 'Progress comment created successfully', {
-        commentId: response.data.id,
-        commentUrl: response.data.html_url
-      });
-
-      return response.data.id;
-    }
-  } catch (error) {
-    logWithContext('GITHUB_COMMENT', 'Error posting/updating progress comment', {
-      error: (error as Error).message,
-      repositoryName,
-      issueNumber,
-      commentId
-    });
-    return undefined;
-  }
-}
 
 // Process issue with Claude Code and return structured response
 async function processIssue(issueContext: IssueContext): Promise<ContainerResponse> {
@@ -460,7 +377,7 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
   try {
     // 1. Setup workspace with repository download and git initialization
     const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
-    
+
     logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
       workspaceDir
     });
@@ -477,17 +394,27 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
     try {
       const claudeStartTime = Date.now();
 
-      for await (const message of query({
-        prompt,
-        options: { permissionMode: 'bypassPermissions' }
-      })) {
+      // Change working directory to the cloned repository
+      const originalCwd = process.cwd();
+      process.chdir(workspaceDir);
+
+      logWithContext('CLAUDE_CODE', 'Changed working directory for Claude Code execution', {
+        originalCwd,
+        newCwd: workspaceDir
+      });
+
+      try {
+        for await (const message of query({
+          prompt,
+          options: { permissionMode: 'bypassPermissions' }
+        })) {
         turnCount++;
         results.push(message);
 
         // Log message details (message structure depends on SDK version)
         logWithContext('CLAUDE_CODE', `Turn ${turnCount} completed`, {
           type: message.type,
-          messagePreview: JSON.stringify(message).substring(0, 200),
+          messagePreview: JSON.stringify(message),
           turnCount,
         });
       }
@@ -507,17 +434,31 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
 
       let commitSha: string | undefined;
       let prSummary: string | undefined = undefined;
+      let changedFiles: Array<{ path: string; content: string }> = [];
 
       if (hasChanges) {
-        // Commit the changes
-        commitSha = await commitChanges(workspaceDir, `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`);
-        
+        // Generate branch name
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/T/g, '-').split('.')[0];
+        const branchName = `claude-code/issue-${issueContext.issueNumber}-${timestamp}`;
+
+        // Create feature branch and commit changes
+        commitSha = await createFeatureBranchAndCommit(
+          workspaceDir,
+          branchName,
+          `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`
+        );
+
+        // Get changed files for PR creation
+        changedFiles = await getChangedFiles(workspaceDir);
+
         // Try to read PR summary
         const prSummaryResult = await readPRSummary(workspaceDir);
         prSummary = prSummaryResult || undefined;
-        
-        logWithContext('ISSUE_PROCESSOR', 'Changes committed', {
+
+        logWithContext('ISSUE_PROCESSOR', 'Changes committed to feature branch', {
           commitSha,
+          branchName,
+          filesChanged: changedFiles.length,
           hasPRSummary: !!prSummary
         });
       }
@@ -533,6 +474,7 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
         success: true,
         solution,
         hasFileChanges: hasChanges,
+        changedFiles: hasChanges ? changedFiles : undefined,
         prSummary,
         commitSha
       };
@@ -545,13 +487,26 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
 
       return response;
 
-    } catch (claudeError) {
-      logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
-        error: (claudeError as Error).message,
+      } catch (claudeError) {
+        logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
+          error: (claudeError as Error).message,
+          turnCount,
+          resultsCount: results.length
+        });
+        throw claudeError;
+      } finally {
+        // Always restore the original working directory
+        process.chdir(originalCwd);
+        logWithContext('CLAUDE_CODE', 'Restored original working directory', { originalCwd });
+      }
+
+    } catch (outerError) {
+      logWithContext('ISSUE_PROCESSOR', 'Error in Claude Code execution setup', {
+        error: (outerError as Error).message,
         turnCount,
         resultsCount: results.length
       });
-      throw claudeError;
+      throw outerError;
     }
 
   } catch (error) {
@@ -677,7 +632,7 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
   // Process issue and return structured response
   try {
     const containerResponse = await processIssue(issueContext);
-    
+
     logWithContext('ISSUE_HANDLER', 'Issue processing completed', {
       success: containerResponse.success,
       hasFileChanges: containerResponse.hasFileChanges,

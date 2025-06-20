@@ -1,7 +1,7 @@
 import { GitHubAPI } from "../../github_client";
 import { logWithContext } from "../../log";
 import { containerFetch, getRouteFromRequest } from "../../fetch";
-import { PRCreator, ContainerResponse } from "./pr_creator";
+import { PRCreator, type ContainerResponse } from "./pr_creator";
 
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
@@ -113,7 +113,7 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
       repository.name,
       issue.number,
       containerResponse,
-      [] // TODO: Extract files from container workspace in future enhancement
+      containerResponse.changedFiles || []
     );
 
     logWithContext('CLAUDE_ROUTING', 'PR creator result', {
