@@ -4,17 +4,14 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import simpleGit from 'simple-git';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { ContainerGitHubClient } from './github_client.js';
 
 const PORT = 8080;
 
-// Container response interface for PR creation
+// Simplified container response interface
 interface ContainerResponse {
   success: boolean;
-  solution: string;
-  hasFileChanges: boolean;
-  changedFiles?: Array<{ path: string; content: string }>;
-  prSummary?: string;
-  commitSha?: string;
+  message: string;
   error?: string;
 }
 
@@ -239,9 +236,9 @@ async function detectGitChanges(workspaceDir: string): Promise<boolean> {
   }
 }
 
-// Create feature branch, commit changes, and return commit SHA
-async function createFeatureBranchAndCommit(workspaceDir: string, branchName: string, message: string): Promise<string> {
-  logWithContext('GIT_WORKSPACE', 'Creating feature branch and committing changes', {
+// Create feature branch, commit changes, and push to remote
+async function createFeatureBranchCommitAndPush(workspaceDir: string, branchName: string, message: string): Promise<string> {
+  logWithContext('GIT_WORKSPACE', 'Creating feature branch, committing, and pushing changes', {
     workspaceDir,
     branchName,
     message
@@ -267,55 +264,17 @@ async function createFeatureBranchAndCommit(workspaceDir: string, branchName: st
       summary: result.summary
     });
 
+    // Push branch to remote
+    await git.push('origin', branchName, ['--set-upstream']);
+    logWithContext('GIT_WORKSPACE', 'Branch pushed to remote successfully', { branchName });
+
     return commitSha;
   } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error creating branch and committing changes', {
+    logWithContext('GIT_WORKSPACE', 'Error creating branch, committing, or pushing changes', {
       error: (error as Error).message,
       branchName
     });
     throw error;
-  }
-}
-
-// Get list of changed files from git
-async function getChangedFiles(workspaceDir: string): Promise<Array<{ path: string; content: string }>> {
-  logWithContext('GIT_WORKSPACE', 'Getting changed files from git', { workspaceDir });
-
-  const git = simpleGit(workspaceDir);
-  const changedFiles: Array<{ path: string; content: string }> = [];
-
-  try {
-    const status = await git.status();
-
-    // Get all modified, added, and renamed files
-    const filePaths = status.files.map(file => file.path);
-
-    logWithContext('GIT_WORKSPACE', 'Found changed files', {
-      fileCount: filePaths.length,
-      files: filePaths
-    });
-
-    // Read content of each changed file
-    for (const filePath of filePaths) {
-      try {
-        const fullPath = path.join(workspaceDir, filePath);
-        const content = await fs.readFile(fullPath, 'utf8');
-        changedFiles.push({ path: filePath, content });
-      } catch (error) {
-        logWithContext('GIT_WORKSPACE', 'Error reading changed file', {
-          filePath,
-          error: (error as Error).message
-        });
-        // Skip files that can't be read (binary, deleted, etc.)
-      }
-    }
-
-    return changedFiles;
-  } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error getting changed files', {
-      error: (error as Error).message
-    });
-    return [];
   }
 }
 
@@ -363,8 +322,8 @@ Work step by step and provide clear explanations of your approach.
 }
 
 
-// Process issue with Claude Code and return structured response
-async function processIssue(issueContext: IssueContext): Promise<ContainerResponse> {
+// Process issue with Claude Code and handle GitHub operations directly
+async function processIssue(issueContext: IssueContext, githubToken: string): Promise<ContainerResponse> {
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
     repositoryName: issueContext.repositoryName,
     issueNumber: issueContext.issueNumber,
@@ -375,20 +334,29 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
   let turnCount = 0;
 
   try {
-    // 1. Setup workspace with repository download and git initialization
+    // 1. Setup workspace with repository clone
     const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
 
     logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
       workspaceDir
     });
 
-    // 2. Prepare prompt for Claude Code
+    // 2. Initialize GitHub client
+    const [owner, repo] = issueContext.repositoryName.split('/');
+    const githubClient = new ContainerGitHubClient(githubToken, owner, repo);
+    
+    logWithContext('ISSUE_PROCESSOR', 'GitHub client initialized', {
+      owner,
+      repo
+    });
+
+    // 3. Prepare prompt for Claude Code
     const prompt = prepareClaudePrompt(issueContext);
     logWithContext('ISSUE_PROCESSOR', 'Claude prompt prepared', {
       promptLength: prompt.length
     });
 
-    // 3. Query Claude Code in the workspace directory
+    // 4. Query Claude Code in the workspace directory
     logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code query');
 
     try {
@@ -428,64 +396,93 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
         resultsCount: results.length
       });
 
-      // 4. Check for file changes using git
+      // 5. Check for file changes using git
       const hasChanges = await detectGitChanges(workspaceDir);
       logWithContext('ISSUE_PROCESSOR', 'Change detection completed', { hasChanges });
 
-      let commitSha: string | undefined;
-      let prSummary: string | undefined = undefined;
-      let changedFiles: Array<{ path: string; content: string }> = [];
-
-      if (hasChanges) {
-        // Generate branch name
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/T/g, '-').split('.')[0];
-        const branchName = `claude-code/issue-${issueContext.issueNumber}-${timestamp}`;
-
-        // Create feature branch and commit changes
-        commitSha = await createFeatureBranchAndCommit(
-          workspaceDir,
-          branchName,
-          `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`
-        );
-
-        // Get changed files for PR creation
-        changedFiles = await getChangedFiles(workspaceDir);
-
-        // Try to read PR summary
-        const prSummaryResult = await readPRSummary(workspaceDir);
-        prSummary = prSummaryResult || undefined;
-
-        logWithContext('ISSUE_PROCESSOR', 'Changes committed to feature branch', {
-          commitSha,
-          branchName,
-          filesChanged: changedFiles.length,
-          hasPRSummary: !!prSummary
-        });
-      }
-
-      // 5. Prepare response with solution text
+      // 6. Get solution text from Claude Code
       let solution = '';
       if (results.length > 0) {
         const lastResult = results[results.length - 1];
         solution = getMessageText(lastResult);
       }
 
-      const response: ContainerResponse = {
-        success: true,
-        solution,
-        hasFileChanges: hasChanges,
-        changedFiles: hasChanges ? changedFiles : undefined,
-        prSummary,
-        commitSha
-      };
+      if (hasChanges) {
+        // Generate branch name
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/T/g, '-').split('.')[0];
+        const branchName = `claude-code/issue-${issueContext.issueNumber}-${timestamp}`;
+        
+        // Create feature branch, commit changes, and push to remote
+        const commitSha = await createFeatureBranchCommitAndPush(
+          workspaceDir, 
+          branchName,
+          `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`
+        );
+        
+        logWithContext('ISSUE_PROCESSOR', 'Changes committed and pushed to feature branch', {
+          commitSha,
+          branchName
+        });
 
-      logWithContext('ISSUE_PROCESSOR', 'Issue processing completed successfully', {
-        hasFileChanges: response.hasFileChanges,
-        solutionLength: response.solution.length,
-        hasPRSummary: !!response.prSummary
-      });
+        // Try to read PR summary
+        const prSummary = await readPRSummary(workspaceDir);
+        
+        // Create pull request
+        try {
+          const repoInfo = await githubClient.getRepository();
+          const prTitle = prSummary ? prSummary.split('\n')[0].trim() : `Fix issue #${issueContext.issueNumber}`;
+          const prBody = generatePRBody(prSummary, solution, issueContext.issueNumber);
+          
+          const pullRequest = await githubClient.createPullRequest(
+            prTitle,
+            prBody,
+            branchName,
+            repoInfo.default_branch
+          );
+          
+          logWithContext('ISSUE_PROCESSOR', 'Pull request created successfully', {
+            prNumber: pullRequest.number,
+            prUrl: pullRequest.html_url
+          });
 
-      return response;
+          // Post comment linking to the PR
+          await githubClient.createComment(
+            parseInt(issueContext.issueNumber),
+            `🔧 I've created a pull request with a potential fix: ${pullRequest.html_url}\n\n${solution}\n\n---\n🤖 Generated with [Claude Code](https://claude.ai/code)`
+          );
+
+          return {
+            success: true,
+            message: `Pull request created successfully: ${pullRequest.html_url}`
+          };
+        } catch (prError) {
+          logWithContext('ISSUE_PROCESSOR', 'Failed to create pull request, posting comment instead', {
+            error: (prError as Error).message
+          });
+          
+          // Fall back to posting a comment with the solution
+          await githubClient.createComment(
+            parseInt(issueContext.issueNumber),
+            `${solution}\n\n---\n⚠️ **Note:** I attempted to create a pull request with code changes, but encountered an error: ${(prError as Error).message}\n\nThe solution above describes the changes that should be made.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)`
+          );
+
+          return {
+            success: true,
+            message: 'Solution posted as comment (PR creation failed)'
+          };
+        }
+      } else {
+        // No file changes, just post solution as comment
+        await githubClient.createComment(
+          parseInt(issueContext.issueNumber),
+          `${solution}\n\n---\n🤖 Generated with [Claude Code](https://claude.ai/code)`
+        );
+
+        return {
+          success: true,
+          message: 'Solution posted as comment (no file changes)'
+        };
+      }
 
       } catch (claudeError) {
         logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
@@ -520,11 +517,26 @@ async function processIssue(issueContext: IssueContext): Promise<ContainerRespon
 
     return {
       success: false,
-      solution: '',
-      hasFileChanges: false,
+      message: 'Failed to process issue',
       error: (error as Error).message
     };
   }
+}
+
+// Generate PR body from summary and solution
+function generatePRBody(prSummary: string | null, _solution: string, issueNumber: string): string {
+  let body = '';
+  
+  if (prSummary) {
+    body = prSummary.trim();
+  } else {
+    body = 'Automated fix generated by Claude Code.';
+  }
+  
+  // Add footer
+  body += `\n\n---\nFixes #${issueNumber}\n\n🤖 This pull request was generated automatically by [Claude Code](https://claude.ai/code) in response to the issue above.`;
+  
+  return body;
 }
 
 // Main issue processing handler
@@ -631,12 +643,16 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
 
   // Process issue and return structured response
   try {
-    const containerResponse = await processIssue(issueContext);
+    const githubToken = process.env.GITHUB_TOKEN;
+    if (!githubToken) {
+      throw new Error('GITHUB_TOKEN is required but not provided');
+    }
+
+    const containerResponse = await processIssue(issueContext, githubToken);
 
     logWithContext('ISSUE_HANDLER', 'Issue processing completed', {
       success: containerResponse.success,
-      hasFileChanges: containerResponse.hasFileChanges,
-      hasPRSummary: !!containerResponse.prSummary,
+      message: containerResponse.message,
       hasError: !!containerResponse.error
     });
 
@@ -650,8 +666,7 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
 
     const errorResponse: ContainerResponse = {
       success: false,
-      solution: '',
-      hasFileChanges: false,
+      message: 'Failed to process issue',
       error: error instanceof Error ? error.message : String(error)
     };
 
