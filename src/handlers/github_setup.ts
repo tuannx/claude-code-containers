@@ -1,3 +1,5 @@
+import { logWithContext } from "../log";
+
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
   const timestamp = new Date().toISOString().split('T')[1].replace(/:/g, '');
   return {

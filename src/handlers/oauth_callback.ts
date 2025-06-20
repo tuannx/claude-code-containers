@@ -1,4 +1,5 @@
 import { encrypt } from "../crypto";
+import { logWithContext } from "../log";
 
 export async function handleOAuthCallback(_request: Request, url: URL, env: any): Promise<Response> {
   logWithContext('OAUTH_CALLBACK', 'Handling OAuth callback', {

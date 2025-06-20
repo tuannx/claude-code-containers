@@ -1,4 +1,5 @@
 import { GitHubAPI } from "../../github_client";
+import { logWithContext } from "../../log";
 
 // Handle push events
 export async function handlePushEvent(data: any, env: any, configDO: any): Promise<Response> {

@@ -25,8 +25,11 @@ COPY container_src/package*.json ./
 # Install npm dependencies
 RUN npm install
 
-# Copy container source code
-COPY container_src/ ./
+# Copy TypeScript configuration
+COPY container_src/tsconfig.json ./
+
+# Copy source code
+COPY container_src/src/ ./src/
 
 # Build TypeScript
 RUN npm run build

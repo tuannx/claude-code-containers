@@ -1,5 +1,6 @@
 {
   "name": "claude-code-container",
+  "type": "module",
   "version": "1.0.0",
   "description": "Container that runs Claude Code for GitHub issue processing",
   "main": "dist/main.js",

@@ -1,4 +1,4 @@
-import { Container, loadBalance, getContainer } from 'cf-containers';
+import { Container, loadBalance, getContainer } from '@cloudflare/containers';
 import { decrypt, generateInstallationToken } from './crypto';
 import { handleOAuthCallback } from './handlers/oauth_callback';
 import { handleClaudeSetup } from './handlers/claude_setup';
@@ -6,6 +6,7 @@ import { handleGitHubSetup } from './handlers/github_setup';
 import { handleGitHubStatus } from './handlers/github_status';
 import { handleGitHubWebhook } from './handlers/github_webhook';
 import { handleInstallationGuide } from './handlers/installation_guide';
+import { logWithContext } from './log';
 
 export class GitHubAppConfigDO {
   private storage: DurableObjectStorage;
@@ -557,7 +558,8 @@ export class GitHubAppConfigDO {
 
 export class MyContainer extends Container {
   defaultPort = 8080;
-  sleepAfter = '30m'; // Extended timeout for Claude Code processing
+  requiredPorts = [8080];
+  sleepAfter = '45s'; // Extended timeout for Claude Code processing
   envVars: Record<string, string> = {
     MESSAGE: 'I was passed in via the container class!',
   };
@@ -659,7 +661,7 @@ export class MyContainer extends Container {
 export default {
   async fetch(
     request: Request,
-    env: any
+    env: { MY_CONTAINER: DurableObjectNamespace<Container<unknown>> }
   ): Promise<Response> {
     const startTime = Date.now();
     const url = new URL(request.url);

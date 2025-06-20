@@ -1,3 +1,5 @@
+import { logWithContext } from "../../log";
+
 // Handle installation events (app installed/uninstalled)
 export async function handleInstallationEvent(data: any, configDO: any): Promise<Response> {
   const action = data.action;

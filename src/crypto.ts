@@ -1,4 +1,5 @@
 import jwt from '@tsndr/cloudflare-worker-jwt';
+import { logWithContext } from './log';
 
 // Encryption utilities
 export async function encrypt(text: string, key?: CryptoKey): Promise<string> {

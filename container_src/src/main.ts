@@ -53,11 +53,6 @@ function logWithContext(context: string, message: string, data?: any): void {
   }
 }
 
-// Legacy log function for backward compatibility
-function log(message: string, data: any = null): void {
-  logWithContext('CONTAINER', message, data);
-}
-
 // Basic health check handler
 async function healthHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   logWithContext('HEALTH', 'Health check requested');

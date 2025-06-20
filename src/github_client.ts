@@ -1,3 +1,5 @@
+import { logWithContext } from "./log";
+
 // GitHub API client with authentication
 export class GitHubAPI {
   private configDO: any;

@@ -1,4 +1,5 @@
 import { encrypt } from "../crypto";
+import { logWithContext } from "../log";
 
 export async function handleClaudeSetup(request: Request, origin: string, env: any): Promise<Response> {
   logWithContext('CLAUDE_SETUP', 'Handling Claude setup request', {

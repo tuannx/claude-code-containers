@@ -1,5 +1,5 @@
 // Enhanced logging utility
-function logWithContext(context: string, message: string, data?: any): void {
+export function logWithContext(context: string, message: string, data?: any): void {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${context}] ${message}`;
 

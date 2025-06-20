@@ -1,4 +1,5 @@
 import { GitHubAPI } from "../../github_client";
+import { logWithContext } from "../../log";
 
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
