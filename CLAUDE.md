@@ -24,35 +24,40 @@ npx wrangler versions upload        # Upload new version with preview URL
 
 ## Tech Stack & Architecture
 
-This is a **Cloudflare Workers Container project** that combines:
+This is a **Cloudflare Workers Container project** that integrates **Claude Code** with **GitHub** for automated issue processing. It combines:
 - **TypeScript Worker** (`src/index.ts`) - Main request router and GitHub integration
-- **Go Container** (`container_src/main.go`) - Containerized application running on port 8080
-- **Durable Objects** - Stateful container management via `MyContainer` class
+- **Node.js Container** (`container_src/src/main.ts`) - Containerized Claude Code environment running on port 8080
+- **Durable Objects** - Two DO classes: `GitHubAppConfigDO` for encrypted credential storage and `MyContainer` for container management
 
 ### Key Architecture Points
 
 **Request Flow:**
 1. Worker receives requests and routes based on path
-2. Container routes (`/container`, `/lb`, `/singleton`, `/error`) proxy to Go containers
-3. GitHub routes (`/gh-setup/*`) handle app setup and OAuth callbacks
+2. GitHub webhooks trigger issue processing in Claude Code containers
+3. Container routes (`/container`, `/lb`, `/singleton`, `/error`) for testing and load balancing
+4. Setup routes (`/claude-setup`, `/gh-setup/*`) handle API key configuration and GitHub app OAuth
 
 **Container Management:**
 - Extends `cf-containers` library's `Container` class
-- Default port 8080, 10-second sleep timeout
+- Default port 8080, 45-second sleep timeout
 - Lifecycle hooks: `onStart()`, `onStop()`, `onError()`
 - Load balancing support across multiple container instances
+- Contains Claude Code SDK (`@anthropic-ai/claude-code`) and GitHub API client (`@octokit/rest`)
 
 **GitHub Integration:**
 - Uses GitHub App Manifests for one-click app creation
 - Each deployment gets isolated GitHub app with dynamic webhook URLs
 - OAuth flow: `/gh-setup` → GitHub → `/gh-setup/callback` → `/gh-setup/install`
+- Webhook processing: `/webhooks/github` handles push, pull_request, issues, installation events
+- Encrypted credential storage using AES-256-GCM in Durable Objects
 
 ## Configuration Files
 
 - **`wrangler.jsonc`** - Workers configuration with container bindings and Durable Objects
-- **`Dockerfile`** - Multi-stage build (golang:1.24-alpine → scratch)
+- **`Dockerfile`** - Multi-stage build with Node.js, Python, Git, and Claude Code CLI
 - **`worker-configuration.d.ts`** - Auto-generated types (run `npm run cf-typegen` after config changes)
 - **`.dev.vars`** - Local environment variables (not committed to git)
+- **`container_src/package.json`** - Container dependencies including Claude Code SDK
 
 ### Key Wrangler Configuration Patterns
 
@@ -65,7 +70,8 @@ This is a **Cloudflare Workers Container project** that combines:
   },
   "durable_objects": {                // Durable Object bindings
     "bindings": [
-      { "name": "MY_CONTAINER", "class_name": "MyContainer" }
+      { "name": "MY_CONTAINER", "class_name": "MyContainer" },
+      { "name": "GITHUB_APP_CONFIG", "class_name": "GitHubAppConfigDO" }
     ]
   }
 }
@@ -78,16 +84,20 @@ This is a **Cloudflare Workers Container project** that combines:
 
 ## Development Patterns
 
-**Testing Endpoints:**
-- `/container/hello` - Basic container functionality
-- `/error` - Test container error handling
-- `/lb` - Load balancing across 3 containers
-- `/singleton` - Single container instance
-- `/gh-setup` - GitHub app setup flow
+**Key Endpoints:**
+- `/claude-setup` - Configure Claude API key
+- `/gh-setup` - GitHub app creation and setup
+- `/gh-status` - Check configuration status
+- `/webhooks/github` - GitHub webhook processor
+- `/container/*` - Basic container functionality
+- `/lb/*` - Load balancing across 3 containers
+- `/singleton/*` - Single container instance
+- `/error/*` - Test container error handling
 
 **Environment Variables:**
-- Container receives `MESSAGE` and `CLOUDFLARE_DEPLOYMENT_ID` from Worker
-- Configure in `wrangler.jsonc` vars section
+- Container receives issue context and GitHub credentials from Worker
+- Configure base environment in `wrangler.jsonc` vars section
+- Sensitive data (API keys, tokens) stored encrypted in Durable Objects
 
 ## Cloudflare Workers Best Practices
 
@@ -95,8 +105,9 @@ This is a **Cloudflare Workers Container project** that combines:
 ```typescript
 export interface Env {
   MY_CONTAINER: DurableObjectNamespace;
+  GITHUB_APP_CONFIG: DurableObjectNamespace;
   // Add other bindings here
-  API_TOKEN?: string;
+  ENVIRONMENT?: string;
 }
 
 export default {
@@ -120,7 +131,31 @@ export default {
 
 ## Current Implementation Status
 
-**Completed:** GitHub App Manifest setup (Phase 1)
-**Next:** Credential storage in Durable Objects, webhook processing with signature verification
+**✅ Completed:**
+- GitHub App Manifest setup and OAuth flow
+- Secure credential storage in Durable Objects with AES-256-GCM encryption
+- Basic webhook processing infrastructure with signature verification
+- Container enhancement with Claude Code SDK and GitHub API integration
+- Issue detection and routing to Claude Code containers
+
+**🔧 In Progress:**
+- End-to-end issue processing with Claude Code analysis and solutions
+- Pull request creation from Claude's code modifications
+- Enhanced error handling and progress monitoring
 
 **Important:** Containers are a Beta feature - API may change. The `cf-containers` library version is pinned to 0.0.7.
+
+## Project Architecture Summary
+
+This project creates an automated GitHub issue processor powered by Claude Code:
+
+1. **Setup Phase**: Configure Claude API key and GitHub app via web interface
+2. **Issue Processing**: GitHub webhooks trigger containerized Claude Code analysis
+3. **Solution Implementation**: Claude Code analyzes repositories and implements solutions
+4. **Result Delivery**: Solutions are delivered as GitHub comments or pull requests
+
+**Key Integration Points:**
+- `src/handlers/github_webhook.ts` - Main webhook entry point
+- `src/handlers/github_webhooks/issues.ts` - Issue-specific processing
+- `container_src/src/main.ts` - Claude Code execution environment
+- Durable Objects for persistent, encrypted storage of credentials and state
