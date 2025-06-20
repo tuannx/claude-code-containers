@@ -350,32 +350,6 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
 
   const results: SDKMessage[] = [];
   let turnCount = 0;
-  let commentId: number | undefined; // Track the comment ID for updates
-  let pendingMessages: string[] = []; // Batch messages before posting
-  const BATCH_SIZE = 5;
-
-  // Helper function to flush pending messages
-  const flushPendingMessages = async () => {
-    if (pendingMessages.length > 0 && commentId) {
-      const batchedContent = pendingMessages.join('\n\n---\n\n');
-      logWithContext('CLAUDE_CODE', 'Flushing batched messages', {
-        messageCount: pendingMessages.length,
-        contentLength: batchedContent.length
-      });
-
-      await postProgressComment(
-        issueContext.repositoryName,
-        issueContext.issueNumber,
-        batchedContent,
-        commentId,
-        true // append to existing comment
-      );
-
-      logWithContext('CLAUDE_CODE', 'Batch posted successfully');
-
-      pendingMessages = []; // Clear the batch
-    }
-  };
 
   try {
     // 1. Create workspace directory
@@ -384,25 +358,13 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       workspaceDir
     });
 
-    // 2. Post initial progress comment
-    logWithContext('ISSUE_PROCESSOR', 'Posting initial progress comment');
-    commentId = await postProgressComment(
-      issueContext.repositoryName,
-      issueContext.issueNumber,
-      'I\'ve started working on this issue!'
-    );
-
-    logWithContext('ISSUE_PROCESSOR', 'Initial progress comment posted', {
-      commentId
-    });
-
-    // 3. Prepare prompt for Claude Code
+    // 2. Prepare prompt for Claude Code
     const prompt = prepareClaudePrompt(issueContext);
     logWithContext('ISSUE_PROCESSOR', 'Claude prompt prepared', {
       promptLength: prompt.length
     });
 
-    // 4. Query Claude Code
+    // 3. Query Claude Code
     logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code query');
 
     try {
@@ -421,37 +383,7 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
           messagePreview: JSON.stringify(message),
           turnCount,
         });
-
-        // Stream progress back to GitHub for assistant messages
-        if (message.type === 'assistant') {
-          const messageText = getMessageText(message);
-
-          logWithContext('CLAUDE_CODE', 'Adding message to batch', {
-            turnCount,
-            messageLength: messageText.length,
-            currentBatchSize: pendingMessages.length,
-            batchSizeLimit: BATCH_SIZE
-          });
-
-          // Add message to batch
-          const progressMessage = `\n${messageText}`;
-          pendingMessages.push(progressMessage);
-
-          logWithContext('CLAUDE_CODE', 'Message added to batch', {
-            newBatchSize: pendingMessages.length,
-            willFlushNow: pendingMessages.length >= BATCH_SIZE
-          });
-
-          // Flush batch immediately if it reaches the batch size
-          if (pendingMessages.length >= BATCH_SIZE) {
-            logWithContext('CLAUDE_CODE', 'Batch size reached, flushing immediately');
-            await flushPendingMessages();
-          }
-        }
       }
-
-      // Flush any remaining pending messages before final processing
-      await flushPendingMessages();
 
       const claudeEndTime = Date.now();
       const claudeDuration = claudeEndTime - claudeStartTime;
@@ -462,30 +394,26 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
         resultsCount: results.length
       });
 
-      // 5. Process final result - POST AS SEPARATE COMMENT
+      // 4. Post final result as single comment
       if (results.length > 0) {
         const lastResult = results[results.length - 1];
         const messageText = getMessageText(lastResult);
 
         if (messageText) {
-          // Post final summary comment as a SEPARATE comment (not appended)
-          logWithContext('FINAL_PROCESSOR', 'Posting final summary comment as separate comment');
+          // Post final summary comment
+          logWithContext('FINAL_PROCESSOR', 'Posting final summary comment');
 
           await postProgressComment(
             issueContext.repositoryName,
             issueContext.issueNumber,
-            `✅ **Task Complete**\n\n${messageText}\n\n---\n🤖 Generated with Claude Code`
-            // No commentId - this creates a new separate comment
+            `${messageText}\n\n---\n🤖 Generated with Claude Code`
           );
 
-          logWithContext('FINAL_PROCESSOR', 'Final summary comment posted as separate comment');
+          logWithContext('FINAL_PROCESSOR', 'Final summary comment posted');
         }
       }
 
     } catch (claudeError) {
-      // Flush any pending messages before posting error
-      await flushPendingMessages();
-
       logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
         error: (claudeError as Error).message,
         turnCount,
@@ -503,16 +431,14 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       resultsCount: results.length
     });
 
-    // Post error comment to GitHub - append to existing progress comment
+    // Post error comment to GitHub
     try {
       logWithContext('ISSUE_PROCESSOR', 'Posting error comment to GitHub');
 
       await postProgressComment(
         issueContext.repositoryName,
         issueContext.issueNumber,
-        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`,
-        commentId,
-        true // append to existing comment
+        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
       );
 
       logWithContext('ISSUE_PROCESSOR', 'Error comment posted successfully');
