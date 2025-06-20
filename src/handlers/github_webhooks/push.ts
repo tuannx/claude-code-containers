@@ -1,5 +1,6 @@
 import { GitHubAPI } from "../../github_client";
 import { logWithContext } from "../../log";
+import { containerFetch } from "../../fetch";
 
 // Handle push events
 export async function handlePushEvent(data: any, env: any, configDO: any): Promise<Response> {
@@ -53,11 +54,15 @@ export async function handlePushEvent(data: any, env: any, configDO: any): Promi
 
   logWithContext('PUSH_EVENT', 'Sending webhook to container', webhookPayload);
 
-  const containerResponse = await container.fetch(new Request('http://internal/webhook', {
+  const containerResponse = await containerFetch(container, new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(webhookPayload)
-  }));
+  }), {
+    containerName,
+    route: '/webhook',
+    env
+  });
 
   logWithContext('PUSH_EVENT', 'Container response received', {
     status: containerResponse.status,

@@ -4,6 +4,7 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { Octokit } from '@octokit/rest';
 import simpleGit from 'simple-git';
 import * as path from 'path';
+import { spawn } from 'child_process';
 
 const PORT = 8080;
 
@@ -144,7 +145,6 @@ async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promi
     });
 
     // Extract archive using unzip command (assuming it's available in container)
-    const { spawn } = require('child_process');
     await new Promise<void>((resolve, reject) => {
       const unzipProcess = spawn('unzip', ['-q', archivePath, '-d', workspaceDir], {
         stdio: ['pipe', 'pipe', 'pipe']
@@ -241,7 +241,7 @@ Work step by step and provide clear explanations of your approach.
 }
 
 // Post progress comment to GitHub
-async function postProgressComment(repositoryName: string, issueNumber: string, message: string): Promise<void> {
+async function postProgressComment(repositoryName: string, issueNumber: string, message: string, commentId?: number, append: boolean = false): Promise<number | undefined> {
   const octokit = getGitHubClient();
   if (!octokit) {
     logWithContext('GITHUB_COMMENT', 'GitHub token not available, skipping comment');
@@ -251,62 +251,150 @@ async function postProgressComment(repositoryName: string, issueNumber: string, 
   try {
     const [owner, repo] = repositoryName.split('/');
 
-    logWithContext('GITHUB_COMMENT', 'Posting progress comment', {
-      owner,
-      repo,
-      issueNumber,
-      messageLength: message.length
-    });
+    if (commentId && append) {
+      // Get existing comment and append to it
+      logWithContext('GITHUB_COMMENT', 'Appending to existing progress comment', {
+        owner,
+        repo,
+        issueNumber,
+        commentId,
+        messageLength: message.length
+      });
 
-    const response = await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: parseInt(issueNumber),
-      body: `🤖 **Claude Code Progress Update**\n\n${message}`
-    });
+      // First get the existing comment
+      const existingComment = await octokit.rest.issues.getComment({
+        owner,
+        repo,
+        comment_id: commentId
+      });
 
-    logWithContext('GITHUB_COMMENT', 'Progress comment posted successfully', {
-      commentId: response.data.id,
-      commentUrl: response.data.html_url
-    });
+      const updatedBody = `${existingComment.data.body}\n\n${message}`;
+
+      const response = await octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        body: updatedBody
+      });
+
+      logWithContext('GITHUB_COMMENT', 'Progress comment appended successfully', {
+        commentId: response.data.id,
+        commentUrl: response.data.html_url
+      });
+
+      return response.data.id;
+    } else if (commentId) {
+      // Update existing comment (replace)
+      logWithContext('GITHUB_COMMENT', 'Updating existing progress comment', {
+        owner,
+        repo,
+        issueNumber,
+        commentId,
+        messageLength: message.length
+      });
+
+      const response = await octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        body: message
+      });
+
+      logWithContext('GITHUB_COMMENT', 'Progress comment updated successfully', {
+        commentId: response.data.id,
+        commentUrl: response.data.html_url
+      });
+
+      return response.data.id;
+    } else {
+      // Create new comment
+      logWithContext('GITHUB_COMMENT', 'Creating new progress comment', {
+        owner,
+        repo,
+        issueNumber,
+        messageLength: message.length
+      });
+
+      const response = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: parseInt(issueNumber),
+        body: message
+      });
+
+      logWithContext('GITHUB_COMMENT', 'Progress comment created successfully', {
+        commentId: response.data.id,
+        commentUrl: response.data.html_url
+      });
+
+      return response.data.id;
+    }
   } catch (error) {
-    logWithContext('GITHUB_COMMENT', 'Error posting progress comment', {
+    logWithContext('GITHUB_COMMENT', 'Error posting/updating progress comment', {
       error: (error as Error).message,
       repositoryName,
-      issueNumber
+      issueNumber,
+      commentId
     });
+    return undefined;
   }
 }
 
 // Process issue with Claude Code
 async function processIssue(issueContext: IssueContext): Promise<void> {
-  const startTime = Date.now();
-
   logWithContext('ISSUE_PROCESSOR', 'Starting issue processing', {
-    issueId: issueContext.issueId,
+    repositoryName: issueContext.repositoryName,
     issueNumber: issueContext.issueNumber,
-    repository: issueContext.repositoryName,
-    title: issueContext.title,
-    author: issueContext.author,
-    labels: issueContext.labels
+    title: issueContext.title
   });
 
-  try {
-    // 1. Setup workspace and clone repository
-    logWithContext('ISSUE_PROCESSOR', 'Setting up workspace');
-    const workspaceDir = await setupWorkspace(issueContext.repositoryUrl, issueContext.issueNumber);
+  const results: SDKMessage[] = [];
+  let turnCount = 0;
+  let commentId: number | undefined; // Track the comment ID for updates
+  let pendingMessages: string[] = []; // Batch messages before posting
+  const BATCH_SIZE = 5;
 
-    logWithContext('ISSUE_PROCESSOR', 'Workspace setup completed', {
+  // Helper function to flush pending messages
+  const flushPendingMessages = async () => {
+    if (pendingMessages.length > 0 && commentId) {
+      const batchedContent = pendingMessages.join('\n\n---\n\n');
+      logWithContext('CLAUDE_CODE', 'Flushing batched messages', {
+        messageCount: pendingMessages.length,
+        contentLength: batchedContent.length
+      });
+
+      await postProgressComment(
+        issueContext.repositoryName,
+        issueContext.issueNumber,
+        batchedContent,
+        commentId,
+        true // append to existing comment
+      );
+
+      logWithContext('CLAUDE_CODE', 'Batch posted successfully');
+
+      pendingMessages = []; // Clear the batch
+    }
+  };
+
+  try {
+    // 1. Create workspace directory
+    const workspaceDir = `/tmp/workspace_${Date.now()}`;
+    logWithContext('ISSUE_PROCESSOR', 'Creating workspace directory', {
       workspaceDir
     });
 
     // 2. Post initial progress comment
     logWithContext('ISSUE_PROCESSOR', 'Posting initial progress comment');
-    await postProgressComment(
+    commentId = await postProgressComment(
       issueContext.repositoryName,
       issueContext.issueNumber,
-      'I\'ve started working on this issue. Analyzing the codebase and requirements...'
+      'I\'ve started working on this issue!'
     );
+
+    logWithContext('ISSUE_PROCESSOR', 'Initial progress comment posted', {
+      commentId
+    });
 
     // 3. Prepare prompt for Claude Code
     const prompt = prepareClaudePrompt(issueContext);
@@ -314,94 +402,117 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
       promptLength: prompt.length
     });
 
-    // 4. Run Claude Code
-    logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code execution');
-    const results: ClaudeMessage[] = [];
-    let turnCount = 0;
-
-    // Set working directory by changing process directory
-    const originalCwd = process.cwd();
-    logWithContext('ISSUE_PROCESSOR', 'Changing working directory', {
-      from: originalCwd,
-      to: workspaceDir
-    });
-
-    process.chdir(workspaceDir);
+    // 4. Query Claude Code
+    logWithContext('ISSUE_PROCESSOR', 'Starting Claude Code query');
 
     try {
       const claudeStartTime = Date.now();
 
-      for await (const message of query({ prompt })) {
+      for await (const message of query({
+        prompt,
+        options: { permissionMode: 'bypassPermissions' }
+      })) {
         turnCount++;
         results.push(message);
 
         // Log message details (message structure depends on SDK version)
         logWithContext('CLAUDE_CODE', `Turn ${turnCount} completed`, {
           type: message.type,
-          messagePreview: JSON.stringify(message).substring(0, 200) + '...',
+          messagePreview: JSON.stringify(message),
           turnCount,
         });
 
         // Stream progress back to GitHub for assistant messages
-        if (message.type === 'assistant' && turnCount % 2 === 0) {
+        if (message.type === 'assistant') {
           const messageText = getMessageText(message);
 
-          logWithContext('CLAUDE_CODE', 'Posting progress update to GitHub', {
+          logWithContext('CLAUDE_CODE', 'Adding message to batch', {
             turnCount,
-            messageLength: messageText.length
+            messageLength: messageText.length,
+            currentBatchSize: pendingMessages.length,
+            batchSizeLimit: BATCH_SIZE
           });
+
+          // Add message to batch
+          const progressMessage = `\n${messageText}`;
+          pendingMessages.push(progressMessage);
+
+          logWithContext('CLAUDE_CODE', 'Message added to batch', {
+            newBatchSize: pendingMessages.length,
+            willFlushNow: pendingMessages.length >= BATCH_SIZE
+          });
+
+          // Flush batch immediately if it reaches the batch size
+          if (pendingMessages.length >= BATCH_SIZE) {
+            logWithContext('CLAUDE_CODE', 'Batch size reached, flushing immediately');
+            await flushPendingMessages();
+          }
+        }
+      }
+
+      // Flush any remaining pending messages before final processing
+      await flushPendingMessages();
+
+      const claudeEndTime = Date.now();
+      const claudeDuration = claudeEndTime - claudeStartTime;
+
+      logWithContext('ISSUE_PROCESSOR', 'Claude Code query completed', {
+        totalTurns: turnCount,
+        duration: claudeDuration,
+        resultsCount: results.length
+      });
+
+      // 5. Process final result - POST AS SEPARATE COMMENT
+      if (results.length > 0) {
+        const lastResult = results[results.length - 1];
+        const messageText = getMessageText(lastResult);
+
+        if (messageText) {
+          // Post final summary comment as a SEPARATE comment (not appended)
+          logWithContext('FINAL_PROCESSOR', 'Posting final summary comment as separate comment');
 
           await postProgressComment(
             issueContext.repositoryName,
             issueContext.issueNumber,
-            `Working on the solution... (Turn ${turnCount})\n\n${messageText.substring(0, 500)}${messageText.length > 500 ? '...' : ''}`
+            `✅ **Task Complete**\n\n${messageText}\n\n---\n🤖 Generated with Claude Code`
+            // No commentId - this creates a new separate comment
           );
+
+          logWithContext('FINAL_PROCESSOR', 'Final summary comment posted as separate comment');
         }
       }
 
-      const claudeTime = Date.now() - claudeStartTime;
-      logWithContext('CLAUDE_CODE', 'Claude Code execution completed', {
-        totalTurns: turnCount,
-        executionTimeMs: claudeTime,
+    } catch (claudeError) {
+      // Flush any pending messages before posting error
+      await flushPendingMessages();
+
+      logWithContext('ISSUE_PROCESSOR', 'Error during Claude Code query', {
+        error: (claudeError as Error).message,
+        turnCount,
         resultsCount: results.length
       });
-
-    } finally {
-      // Restore original working directory
-      logWithContext('ISSUE_PROCESSOR', 'Restoring original working directory', {
-        restoringTo: originalCwd
-      });
-      process.chdir(originalCwd);
+      throw claudeError;
     }
 
-    // 5. Process final results
-    logWithContext('ISSUE_PROCESSOR', 'Processing final results');
-    await processFinalResults(issueContext, results);
-
-    const totalTime = Date.now() - startTime;
-    logWithContext('ISSUE_PROCESSOR', 'Issue processing completed successfully', {
-      totalProcessingTimeMs: totalTime,
-      totalTurns: turnCount
-    });
-
   } catch (error) {
-    const totalTime = Date.now() - startTime;
-
     logWithContext('ISSUE_PROCESSOR', 'Error processing issue', {
       error: (error as Error).message,
-      stack: (error as Error).stack,
-      issueId: issueContext.issueId,
-      processingTimeMs: totalTime
+      repositoryName: issueContext.repositoryName,
+      issueNumber: issueContext.issueNumber,
+      turnCount,
+      resultsCount: results.length
     });
 
-    // Post error comment to GitHub
+    // Post error comment to GitHub - append to existing progress comment
     try {
       logWithContext('ISSUE_PROCESSOR', 'Posting error comment to GitHub');
 
       await postProgressComment(
         issueContext.repositoryName,
         issueContext.issueNumber,
-        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`
+        `❌ **Error occurred while processing this issue:**\n\n\`\`\`\n${(error as Error).message}\n\`\`\`\n\nI'll need human assistance to resolve this.`,
+        commentId,
+        true // append to existing comment
       );
 
       logWithContext('ISSUE_PROCESSOR', 'Error comment posted successfully');
@@ -413,68 +524,6 @@ async function processIssue(issueContext: IssueContext): Promise<void> {
 
     throw error;
   }
-}
-
-// Helper function to extract text from SDK message
-function getMessageText(message: SDKMessage): string {
-  // Handle different message types from the SDK
-  if ('content' in message && typeof message.content === 'string') {
-    return message.content;
-  }
-  if ('text' in message && typeof message.text === 'string') {
-    return message.text;
-  }
-  // If message has content array, extract text from it
-  if ('content' in message && Array.isArray(message.content)) {
-    return message.content
-      .filter(item => item.type === 'text')
-      .map(item => item.text)
-      .join(' ');
-  }
-  return JSON.stringify(message);
-}
-
-// Process final results from Claude Code
-async function processFinalResults(issueContext: IssueContext, results: ClaudeMessage[]): Promise<void> {
-  logWithContext('FINAL_PROCESSOR', 'Processing final results', {
-    resultsCount: results.length,
-    issueNumber: issueContext.issueNumber
-  });
-
-  const lastResult = results[results.length - 1];
-
-  if (lastResult) {
-    const messageText = getMessageText(lastResult);
-
-    logWithContext('FINAL_PROCESSOR', 'Last result extracted', {
-      hasMessage: !!messageText,
-      messageLength: messageText?.length || 0,
-      messageType: lastResult.type
-    });
-
-    if (messageText) {
-      // Post final summary comment
-      logWithContext('FINAL_PROCESSOR', 'Posting final summary comment');
-
-      await postProgressComment(
-        issueContext.repositoryName,
-        issueContext.issueNumber,
-        `✅ **Analysis Complete**\n\n${messageText}\n\n---\n🤖 Generated with Claude Code`
-      );
-
-      logWithContext('FINAL_PROCESSOR', 'Final summary comment posted');
-    }
-  } else {
-    logWithContext('FINAL_PROCESSOR', 'No results to process');
-  }
-
-  logWithContext('FINAL_PROCESSOR', 'Final results processing completed');
-
-  // TODO: In future iterations, implement:
-  // - Branch creation with changes
-  // - Pull request creation
-  // - Test execution
-  // - Code quality checks
 }
 
 // Main issue processing handler
@@ -724,3 +773,43 @@ process.on('unhandledRejection', (reason, promise) => {
     promise: String(promise)
   });
 });
+
+// Helper function to extract text from SDK message
+function getMessageText(message: SDKMessage): string {
+  // Handle different message types from the SDK
+  if ('content' in message && typeof message.content === 'string') {
+    return message.content;
+  }
+  if ('text' in message && typeof message.text === 'string') {
+    return message.text;
+  }
+  // If message has content array, extract text from it
+  if ('content' in message && Array.isArray(message.content)) {
+    const textContent = message.content
+      .filter(item => item.type === 'text')
+      .map(item => item.text)
+      .join('\n\n');
+
+    if (textContent.trim()) {
+      return textContent;
+    }
+  }
+
+  // Try to extract from message object if it has a message property
+  if ('message' in message && message.message && typeof message.message === 'object') {
+    const msg = message.message as any;
+    if ('content' in msg && Array.isArray(msg.content)) {
+      const textContent = msg.content
+        .filter((item: any) => item.type === 'text')
+        .map((item: any) => item.text)
+        .join('\n\n');
+
+      if (textContent.trim()) {
+        return textContent;
+      }
+    }
+  }
+
+  // Last resort: return a generic message instead of JSON
+  return JSON.stringify(message);
+}

@@ -1,5 +1,6 @@
 import { GitHubAPI } from "../../github_client";
 import { logWithContext } from "../../log";
+import { containerFetch, getRouteFromRequest } from "../../fetch";
 
 // Route GitHub issue to Claude Code container
 async function routeToClaudeCodeContainer(issue: any, repository: any, env: any, configDO: any): Promise<void> {
@@ -65,13 +66,17 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
   });
 
   try {
-    const response = await container.fetch(new Request('http://internal/process-issue', {
+    const response = await containerFetch(container, new Request('http://internal/process-issue', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(issueContext)
-    }));
+    }), {
+      containerName,
+      route: '/process-issue',
+      env
+    });
 
     logWithContext('CLAUDE_ROUTING', 'Claude Code container response', {
       status: response.status,
@@ -170,18 +175,26 @@ export async function handleIssuesEvent(data: any, env: any, configDO: any): Pro
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
 
-  await container.fetch(new Request('http://internal/webhook', {
+  const webhookPayload = {
+    event: 'issues',
+    action,
+    repository: repository.full_name,
+    issue_number: issue.number,
+    issue_title: issue.title,
+    issue_author: issue.user.login
+  };
+
+  await containerFetch(container, new Request('http://internal/webhook', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      event: 'issues',
-      action,
-      repository: repository.full_name,
-      issue_number: issue.number,
-      issue_title: issue.title,
-      issue_author: issue.user.login
-    })
-  }));
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(webhookPayload)
+  }), {
+    containerName,
+    route: '/webhook',
+    env
+  });
 
   return new Response('Issues event processed', { status: 200 });
 }

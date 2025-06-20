@@ -1,4 +1,5 @@
 import { GitHubAPI } from "../../github_client";
+import { containerFetch } from "../../fetch";
 
 // Handle pull request events
 export async function handlePullRequestEvent(data: any, env: any, configDO: any): Promise<Response> {
@@ -31,18 +32,24 @@ export async function handlePullRequestEvent(data: any, env: any, configDO: any)
   const id = env.MY_CONTAINER.idFromName(containerName);
   const container = env.MY_CONTAINER.get(id);
 
-  await container.fetch(new Request('http://internal/webhook', {
+  const webhookPayload = {
+    event: 'pull_request',
+    action,
+    repository: repository.full_name,
+    pr_number: pullRequest.number,
+    pr_title: pullRequest.title,
+    pr_author: pullRequest.user.login
+  };
+
+  await containerFetch(container, new Request('http://internal/webhook', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      event: 'pull_request',
-      action,
-      repository: repository.full_name,
-      pr_number: pullRequest.number,
-      pr_title: pullRequest.title,
-      pr_author: pullRequest.user.login
-    })
-  }));
+    body: JSON.stringify(webhookPayload)
+  }), {
+    containerName,
+    route: '/webhook',
+    env
+  });
 
   return new Response('Pull request event processed', { status: 200 });
 }

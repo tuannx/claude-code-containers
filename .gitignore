@@ -59,3 +59,6 @@ jspm_packages/
 
 .dev.vars
 .wrangler/
+
+# build files
+dist

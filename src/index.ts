@@ -1,5 +1,6 @@
 import { Container, loadBalance, getContainer } from '@cloudflare/containers';
 import { decrypt, generateInstallationToken } from './crypto';
+import { containerFetch, getRouteFromRequest } from './fetch';
 import { handleOAuthCallback } from './handlers/oauth_callback';
 import { handleClaudeSetup } from './handlers/claude_setup';
 import { handleGitHubSetup } from './handlers/github_setup';
@@ -729,7 +730,11 @@ export default {
         routeMatched = true;
         let id = env.MY_CONTAINER.idFromName('container');
         let container = env.MY_CONTAINER.get(id);
-        response = await container.fetch(request);
+        response = await containerFetch(container, request, {
+          containerName: 'container',
+          route: getRouteFromRequest(request),
+          env
+        });
       }
 
       else if (pathname.startsWith('/error')) {
@@ -737,20 +742,33 @@ export default {
         routeMatched = true;
         let id = env.MY_CONTAINER.idFromName('error-test');
         let container = env.MY_CONTAINER.get(id);
-        response = await container.fetch(request);
+        response = await containerFetch(container, request, {
+          containerName: 'error-test',
+          route: getRouteFromRequest(request),
+          env
+        });
       }
 
       else if (pathname.startsWith('/lb')) {
         logWithContext('MAIN_HANDLER', 'Routing to load balanced containers');
         routeMatched = true;
         let container = await loadBalance(env.MY_CONTAINER, 3);
-        response = await container.fetch(request);
+        response = await containerFetch(container, request, {
+          containerName: 'load-balanced',
+          route: getRouteFromRequest(request),
+          env
+        });
       }
 
       else if (pathname.startsWith('/singleton')) {
         logWithContext('MAIN_HANDLER', 'Routing to singleton container');
         routeMatched = true;
-        response = await getContainer(env.MY_CONTAINER).fetch(request);
+        const container: DurableObjectStub<Container<unknown>> = getContainer(env.MY_CONTAINER);
+        response = await containerFetch(container, request, {
+          containerName: 'singleton',
+          route: getRouteFromRequest(request),
+          env
+        });
       }
 
       // Default home page
