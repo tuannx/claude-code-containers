@@ -209,83 +209,98 @@ async function initializeGitWorkspace(workspaceDir: string): Promise<void> {
   }
 }
 
-// Detect if there are any git changes from the default branch
-async function detectGitChanges(workspaceDir: string): Promise<boolean> {
-  logWithContext('GIT_WORKSPACE', 'Detecting git changes', { workspaceDir });
+// Detect if there are any new commits on the current branch
+async function detectNewCommits(workspaceDir: string): Promise<boolean> {
+  logWithContext('GIT_WORKSPACE', 'Detecting new commits', { workspaceDir });
 
   const git = simpleGit(workspaceDir);
 
   try {
+    // Get the current branch status
     const status = await git.status();
-    const hasChanges = !status.isClean();
+    const hasNewCommits = status.ahead > 0;
 
-    logWithContext('GIT_WORKSPACE', 'Git change detection result', {
-      hasChanges,
-      isClean: status.isClean(),
-      files: status.files.map(f => ({ file: f.path, status: f.working_dir })),
+    // Also get recent commits to see what was added
+    const log = await git.log({ maxCount: 5 });
+
+    logWithContext('GIT_WORKSPACE', 'New commit detection result', {
+      hasNewCommits,
       ahead: status.ahead,
-      behind: status.behind
+      behind: status.behind,
+      currentBranch: status.current,
+      recentCommits: log.all.slice(0, 3).map(commit => ({
+        hash: commit.hash.substring(0, 8),
+        message: commit.message,
+        author: commit.author_name,
+        date: commit.date
+      }))
     });
 
-    return hasChanges;
+    return hasNewCommits;
   } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error detecting git changes', {
+    logWithContext('GIT_WORKSPACE', 'Error detecting new commits', {
       error: (error as Error).message
     });
     return false;
   }
 }
 
-// Create feature branch, commit changes, and push to remote
-async function createFeatureBranchCommitAndPush(workspaceDir: string, branchName: string, message: string): Promise<string> {
-  logWithContext('GIT_WORKSPACE', 'Creating feature branch, committing, and pushing changes', {
-    workspaceDir,
-    branchName,
-    message
-  });
+// Push existing commits to remote (Claude handles commits, we handle push)
+async function pushCommitsToRemote(workspaceDir: string): Promise<string> {
+  logWithContext('GIT_WORKSPACE', 'Pushing commits to remote', { workspaceDir });
 
   const git = simpleGit(workspaceDir);
 
   try {
-    // Create and checkout new feature branch
-    await git.checkoutLocalBranch(branchName);
-    logWithContext('GIT_WORKSPACE', 'Feature branch created and checked out', { branchName });
+    // Get current branch info
+    const status = await git.status();
+    const currentBranch = status.current;
 
-    // Add all changes
-    await git.add('.');
+    if (!currentBranch) {
+      throw new Error('No current branch detected');
+    }
 
-    // Commit changes
-    const result = await git.commit(message);
-    const commitSha = result.commit;
+    // Get the latest commit hash
+    const log = await git.log({ maxCount: 1 });
+    const latestCommit = log.latest;
 
-    logWithContext('GIT_WORKSPACE', 'Changes committed to feature branch', {
-      commitSha,
-      branchName,
-      summary: result.summary
+    if (!latestCommit) {
+      throw new Error('No commits found');
+    }
+
+    logWithContext('GIT_WORKSPACE', 'Pushing current branch to remote', {
+      branch: currentBranch,
+      commitHash: latestCommit.hash.substring(0, 8),
+      commitMessage: latestCommit.message,
+      ahead: status.ahead
     });
 
-    // Push branch to remote
-    await git.push('origin', branchName, ['--set-upstream']);
-    logWithContext('GIT_WORKSPACE', 'Branch pushed to remote successfully', { branchName });
+    // Push current branch to remote with upstream tracking
+    await git.push('origin', currentBranch, ['--set-upstream']);
 
-    return commitSha;
+    logWithContext('GIT_WORKSPACE', 'Commits pushed to remote successfully', {
+      branch: currentBranch,
+      commitCount: status.ahead
+    });
+
+    return latestCommit.hash;
   } catch (error) {
-    logWithContext('GIT_WORKSPACE', 'Error creating branch, committing, or pushing changes', {
-      error: (error as Error).message,
-      branchName
+    logWithContext('GIT_WORKSPACE', 'Error pushing commits to remote', {
+      error: (error as Error).message
     });
     throw error;
   }
 }
 
-// Read PR summary from .claude-pr-summary.md file
-async function readPRSummary(workspaceDir: string): Promise<string | null> {
-  const summaryPath = path.join(workspaceDir, '.claude-pr-summary.md');
+// Read PR summary from .claude-pr-summary.md file in /tmp directory
+async function readPRSummary(issueNumber: string): Promise<string | null> {
+  const summaryPath = `/tmp/.claude-pr-summary.md`;
 
   try {
     const content = await fs.readFile(summaryPath, 'utf8');
     logWithContext('GIT_WORKSPACE', 'PR summary read successfully', {
-      contentLength: content.length
+      contentLength: content.length,
+      summaryPath
     });
     return content.trim();
   } catch (error) {
@@ -314,8 +329,68 @@ The repository has been cloned to your current working directory. Please:
 3. Implement a solution that addresses the issue
 4. Write appropriate tests if needed
 5. Ensure code quality and consistency with existing patterns
+6. **CREATE A NEW BRANCH AND COMMIT YOUR CHANGES**: After making changes, create a new branch and commit your changes using good commit message practices. DO NOT PUSH to remote - just commit locally.
 
-**IMPORTANT: If you make any file changes, please create a file called '.claude-pr-summary.md' in the root directory with a concise summary (1-3 sentences) of what changes you made and why. This will be used for the pull request description.**
+## Git Commit Best Practices
+
+When you commit your changes, please follow these seven rules of a great Git commit message:
+
+1. Separate subject from body with a blank line
+2. Limit the subject line to 50 characters
+3. Capitalize the subject line
+4. Do not end the subject line with a period
+5. Use the imperative mood in the subject line
+6. Wrap the body at 72 characters
+7. Use the body to explain what and why vs. how
+
+Example format:
+\`\`\`
+Summarize changes in around 50 characters or less
+
+More detailed explanatory text, if necessary. Wrap it to about 72
+characters or so. In some contexts, the first line is treated as the
+subject of the commit and the rest of the text as the body. The
+blank line separating the summary from the body is critical (unless
+you omit the body entirely); various tools like 'log', 'shortlog'
+and 'rebase' can get confused if you run the two together.
+
+Explain the problem that this commit is solving. Focus on why you
+are making this change as opposed to how (the code explains that).
+Are there side effects or other unintuitive consequences of this
+change? Here's the place to explain them.
+
+Further paragraphs come after blank lines.
+
+ - Bullet points are okay, too
+ - Typically a hyphen or asterisk is used for the bullet, preceded
+   by a single space, with blank lines in between, but conventions
+   vary here
+
+Resolves: #${issueContext.issueNumber}
+See also: #456, #789 (if applicable)
+\`\`\`
+
+**IMPORTANT: After you create a new branch and commit your changes locally (DO NOT PUSH), please create a file called '.claude-pr-summary.md' in the /tmp directory with a pull request summary. The first line should be the PR title (under 50 characters), and the rest should be the PR description. Include 'Fixes #${issueContext.issueNumber}' in the description. For example:**
+
+\`\`\`
+Fix authentication timeout bug
+
+This commit resolves the authentication timeout issue that was causing
+users to be logged out unexpectedly after 5 minutes of inactivity.
+
+- Updated session timeout from 5 minutes to 30 minutes
+- Added proper cleanup for expired sessions
+- Improved error handling for timeout scenarios
+
+Fixes #${issueContext.issueNumber}
+\`\`\`
+
+**WORKFLOW SUMMARY:**
+1. Implement your solution
+2. Create a new branch (e.g., \`git checkout -b fix-issue-${issueContext.issueNumber}\`)
+3. Commit your changes with a good commit message (following the rules above)
+4. Create the PR summary file in /tmp directory
+5. DO NOT PUSH - our system will handle pushing and PR creation automatically
 
 Work step by step and provide clear explanations of your approach.
 `;
@@ -344,7 +419,7 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
     // 2. Initialize GitHub client
     const [owner, repo] = issueContext.repositoryName.split('/');
     const githubClient = new ContainerGitHubClient(githubToken, owner, repo);
-    
+
     logWithContext('ISSUE_PROCESSOR', 'GitHub client initialized', {
       owner,
       repo
@@ -396,9 +471,9 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
         resultsCount: results.length
       });
 
-      // 5. Check for file changes using git
-      const hasChanges = await detectGitChanges(workspaceDir);
-      logWithContext('ISSUE_PROCESSOR', 'Change detection completed', { hasChanges });
+      // 5. Check for new commits (Claude should have created commits)
+      const hasNewCommits = await detectNewCommits(workspaceDir);
+      logWithContext('ISSUE_PROCESSOR', 'New commit detection completed', { hasNewCommits });
 
       // 6. Get solution text from Claude Code
       let solution = '';
@@ -407,42 +482,43 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
         solution = getMessageText(lastResult);
       }
 
-      if (hasChanges) {
-        // Generate branch name
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/T/g, '-').split('.')[0];
-        const branchName = `claude-code/issue-${issueContext.issueNumber}-${timestamp}`;
-        
-        // Create feature branch, commit changes, and push to remote
-        const commitSha = await createFeatureBranchCommitAndPush(
-          workspaceDir, 
-          branchName,
-          `Fix issue #${issueContext.issueNumber}: ${issueContext.title}`
-        );
-        
-        logWithContext('ISSUE_PROCESSOR', 'Changes committed and pushed to feature branch', {
-          commitSha,
-          branchName
+      if (hasNewCommits) {
+        // Push commits to remote (Claude created commits, we just push them)
+        const commitSha = await pushCommitsToRemote(workspaceDir);
+
+        logWithContext('ISSUE_PROCESSOR', 'Commits pushed to remote successfully', {
+          commitSha: commitSha.substring(0, 8)
         });
 
-        // Try to read PR summary
-        const prSummary = await readPRSummary(workspaceDir);
-        
+        // Try to read PR summary from /tmp directory
+        const prSummary = await readPRSummary(issueContext.issueNumber);
+
         // Create pull request
         try {
           const repoInfo = await githubClient.getRepository();
-          const prTitle = prSummary ? prSummary.split('\n')[0].trim() : `Fix issue #${issueContext.issueNumber}`;
-          const prBody = generatePRBody(prSummary, solution, issueContext.issueNumber);
-          
+          const { title: prTitle, body: prBody } = parsePRSummary(prSummary, issueContext.issueNumber);
+
+          // Get current branch name for the PR
+          const git = simpleGit(workspaceDir);
+          const status = await git.status();
+          const currentBranch = status.current;
+
+          if (!currentBranch) {
+            throw new Error('No current branch detected for PR creation');
+          }
+
           const pullRequest = await githubClient.createPullRequest(
             prTitle,
             prBody,
-            branchName,
+            currentBranch,
             repoInfo.default_branch
           );
-          
+
           logWithContext('ISSUE_PROCESSOR', 'Pull request created successfully', {
             prNumber: pullRequest.number,
-            prUrl: pullRequest.html_url
+            prUrl: pullRequest.html_url,
+            prTitle,
+            branch: currentBranch
           });
 
           // Post comment linking to the PR
@@ -459,7 +535,7 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
           logWithContext('ISSUE_PROCESSOR', 'Failed to create pull request, posting comment instead', {
             error: (prError as Error).message
           });
-          
+
           // Fall back to posting a comment with the solution
           await githubClient.createComment(
             parseInt(issueContext.issueNumber),
@@ -472,7 +548,7 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
           };
         }
       } else {
-        // No file changes, just post solution as comment
+        // No new commits, just post solution as comment
         await githubClient.createComment(
           parseInt(issueContext.issueNumber),
           `${solution}\n\n---\n🤖 Generated with [Claude Code](https://claude.ai/code)`
@@ -480,7 +556,7 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
 
         return {
           success: true,
-          message: 'Solution posted as comment (no file changes)'
+          message: 'Solution posted as comment (no new commits)'
         };
       }
 
@@ -523,20 +599,29 @@ async function processIssue(issueContext: IssueContext, githubToken: string): Pr
   }
 }
 
-// Generate PR body from summary and solution
-function generatePRBody(prSummary: string | null, _solution: string, issueNumber: string): string {
-  let body = '';
-  
-  if (prSummary) {
-    body = prSummary.trim();
-  } else {
-    body = 'Automated fix generated by Claude Code.';
+// Parse PR summary to extract title and body
+function parsePRSummary(prSummary: string | null, issueNumber: string): { title: string; body: string } {
+  if (!prSummary) {
+    return {
+      title: `Fix issue #${issueNumber}`,
+      body: `Automated fix generated by Claude Code.\n\nFixes #${issueNumber}\n\n🤖 This pull request was generated automatically by [Claude Code](https://claude.ai/code) in response to the issue above.`
+    };
   }
-  
-  // Add footer
-  body += `\n\n---\nFixes #${issueNumber}\n\n🤖 This pull request was generated automatically by [Claude Code](https://claude.ai/code) in response to the issue above.`;
-  
-  return body;
+
+  const lines = prSummary.trim().split('\n');
+  const title = lines[0].trim();
+  const body = lines.slice(1).join('\n').trim();
+
+  // Ensure the body includes the fix reference if not already present
+  let finalBody = body;
+  if (!finalBody.toLowerCase().includes(`fixes #${issueNumber}`) && !finalBody.toLowerCase().includes(`resolves #${issueNumber}`)) {
+    finalBody += `\n\nFixes #${issueNumber}`;
+  }
+
+  // Add automation footer
+  finalBody += `\n\n🤖 This pull request was generated automatically by [Claude Code](https://claude.ai/code) in response to the issue above.`;
+
+  return { title, body: finalBody };
 }
 
 // Main issue processing handler
