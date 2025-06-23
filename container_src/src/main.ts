@@ -732,9 +732,10 @@ async function requestHandler(req: http.IncomingMessage, res: http.ServerRespons
 // Start server
 const server = http.createServer(requestHandler);
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   logWithContext('SERVER', 'Claude Code container server started', {
     port: PORT,
+    host: '0.0.0.0',
     pid: process.pid,
     nodeVersion: process.version,
     platform: process.platform,
