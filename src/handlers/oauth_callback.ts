@@ -72,7 +72,7 @@ export async function handleOAuthCallback(_request: Request, url: URL, env: any)
           pull_requests: 'write',
           issues: 'write'
         },
-        events: ['push', 'pull_request', 'issues'],
+        events: ['issues'],
         createdAt: new Date().toISOString(),
         webhookCount: 0
       };

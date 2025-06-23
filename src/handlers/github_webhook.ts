@@ -1,5 +1,5 @@
 import { logWithContext } from "../log";
-import { handleInstallationEvent, handleInstallationRepositoriesEvent, handleIssuesEvent, handlePullRequestEvent, handlePushEvent } from "./github_webhooks";
+import { handleInstallationEvent, handleInstallationRepositoriesEvent, handleIssuesEvent } from "./github_webhooks";
 
 // Route webhook events to specific handlers
 async function routeWebhookEvent(event: string, data: any, configDO: any, env: any): Promise<Response> {
@@ -16,19 +16,13 @@ async function routeWebhookEvent(event: string, data: any, configDO: any, env: a
     case 'installation_repositories':
       return handleInstallationRepositoriesEvent(data, configDO);
 
-    case 'push':
-      return handlePushEvent(data, env, configDO);
-
-    case 'pull_request':
-      return handlePullRequestEvent(data, env, configDO);
-
     case 'issues':
       return handleIssuesEvent(data, env, configDO);
 
     default:
       logWithContext('EVENT_ROUTER', 'Unhandled webhook event', {
         event,
-        availableEvents: ['installation', 'installation_repositories', 'push', 'pull_request', 'issues']
+        availableEvents: ['installation', 'installation_repositories', 'issues']
       });
       return new Response('Event acknowledged', { status: 200 });
   }

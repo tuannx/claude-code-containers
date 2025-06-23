@@ -18,8 +18,6 @@ function generateAppManifest(workerDomain: string): GitHubAppManifest {
       issues: 'write'
     },
     default_events: [
-      'push',
-      'pull_request',
       'issues'
     ]
   };
@@ -162,7 +160,7 @@ Permissions:
 - Issues: write
 
 Webhook Events:
-- push, pull_request, issues
+- issues
 - installation events (automatically enabled)
 
 Webhook URL: ${webhookUrl}
