@@ -6,7 +6,6 @@ import { handleClaudeSetup } from './handlers/claude_setup';
 import { handleGitHubSetup } from './handlers/github_setup';
 import { handleGitHubStatus } from './handlers/github_status';
 import { handleGitHubWebhook } from './handlers/github_webhook';
-import { handleInstallationGuide } from './handlers/installation_guide';
 import { logWithContext } from './log';
 
 export class GitHubAppConfigDO {
@@ -702,12 +701,6 @@ export default {
         logWithContext('MAIN_HANDLER', 'Routing to OAuth callback');
         routeMatched = true;
         response = await handleOAuthCallback(request, url, env);
-      }
-
-      else if (pathname === '/gh-setup/install') {
-        logWithContext('MAIN_HANDLER', 'Routing to installation guide');
-        routeMatched = true;
-        response = await handleInstallationGuide(request, url);
       }
 
       // Status endpoint to check stored configurations

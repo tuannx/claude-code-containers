@@ -77,12 +77,12 @@ export async function handleClaudeSetup(request: Request, origin: string, env: a
     </style>
 </head>
 <body>
-    <h1 class="success">✅ Claude Code API Key Configured!</h1>
+    <h1 class="success">Claude Code API Key Configured!</h1>
     <p>Your Anthropic API key has been securely stored and encrypted.</p>
     <p>Claude Code is now ready to process GitHub issues automatically!</p>
 
     <a href="/gh-setup" class="next-btn">
-        📱 Setup GitHub Integration
+        Setup GitHub Integration
     </a>
 
     <p><small>Your API key is encrypted and stored securely in Cloudflare's Durable Objects.</small></p>
@@ -237,12 +237,12 @@ export async function handleClaudeSetup(request: Request, origin: string, env: a
 </head>
 <body>
     <div class="header">
-        <h1>🤖 Claude Code Setup</h1>
+        <h1>Claude Code Setup</h1>
         <p>Configure your Anthropic API key to enable AI-powered GitHub issue processing</p>
     </div>
 
     <div class="info-box">
-        <h3>🔑 What you'll need</h3>
+        <h3>What you'll need</h3>
         <p>An Anthropic API key with access to Claude. You can get one from the <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a>.</p>
     </div>
 
@@ -283,19 +283,19 @@ export async function handleClaudeSetup(request: Request, origin: string, env: a
         </div>
 
         <button type="submit" class="submit-btn">
-            🔐 Save API Key Securely
+            Save API Key Securely
         </button>
     </form>
 
     <div class="security-note">
-        <strong>🔒 Security:</strong> Your API key is encrypted using AES-256-GCM before storage.
+        <strong>Security:</strong> Your API key is encrypted using AES-256-GCM before storage.
         Only your worker deployment can decrypt and use it. It's never logged or exposed.
     </div>
 
-    <p><strong>Already configured?</strong> <a href="/gh-setup">Continue to GitHub Setup →</a></p>
+    <p><strong>Already configured?</strong> <a href="/gh-setup">Continue to GitHub Setup</a></p>
 
     <hr style="margin: 40px 0;">
-    <p style="text-align: center;"><a href="/">← Back to Home</a></p>
+    <p style="text-align: center;"><a href="/">Back to Home</a></p>
 </body>
 </html>`;
 

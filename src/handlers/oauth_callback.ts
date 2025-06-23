@@ -133,7 +133,7 @@ export async function handleOAuthCallback(_request: Request, url: URL, env: any)
     </style>
 </head>
 <body>
-    <h1 class="success">✅ GitHub App Created Successfully!</h1>
+    <h1 class="success">GitHub App Created Successfully!</h1>
 
     <div class="app-info">
         <h3>App Details</h3>
@@ -148,7 +148,7 @@ export async function handleOAuthCallback(_request: Request, url: URL, env: any)
     <p>Click the button below to install the app on your repositories and start receiving webhooks.</p>
 
     <a href="${appData.html_url}/installations/new" class="install-btn">
-        📦 Install App on Repositories
+        Install App on Repositories
     </a>
 
     <p><small>App credentials have been securely stored and webhooks are ready to receive events.</small></p>

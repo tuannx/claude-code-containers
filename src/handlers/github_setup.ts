@@ -1,16 +1,15 @@
 import { logWithContext } from "../log";
 
 function generateAppManifest(workerDomain: string): GitHubAppManifest {
-  const timestamp = new Date().toISOString().split('T')[1].replace(/:/g, '');
   return {
-    name: `Worker GitHub Integration - ${timestamp}`,
+    name: `Claude Code on Cloudflare`,
     url: workerDomain,
     hook_attributes: {
       url: `${workerDomain}/webhooks/github`
     },
     redirect_url: `${workerDomain}/gh-setup/callback`,
     callback_urls: [`${workerDomain}/gh-setup/callback`],
-    setup_url: `${workerDomain}/gh-setup/install`,
+    setup_url: `${workerDomain}`,
     public: false,
     default_permissions: {
       contents: 'write',
@@ -112,12 +111,12 @@ export async function handleGitHubSetup(_request: Request, origin: string): Prom
 </head>
 <body>
     <div class="header">
-        <h1>🚀 GitHub App Setup</h1>
+        <h1>GitHub App Setup</h1>
         <p>Configure GitHub webhook integration for your Cloudflare Worker</p>
     </div>
 
     <div class="webhook-info">
-        <h3>📡 Your Webhook URL</h3>
+        <h3>Your Webhook URL</h3>
         <div class="webhook-url">${webhookUrl}</div>
         <p>This URL will receive GitHub webhook events once setup is complete.</p>
     </div>
@@ -148,7 +147,7 @@ export async function handleGitHubSetup(_request: Request, origin: string): Prom
         <form action="https://github.com/settings/apps/new" method="post" id="github-app-form">
             <input type="hidden" name="manifest" id="manifest" value="">
             <button type="submit" class="create-app-btn">
-                📱 Create GitHub App
+                Create GitHub App
             </button>
         </form>
     </div>
