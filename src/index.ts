@@ -725,8 +725,7 @@ export default {
         let container = env.MY_CONTAINER.get(id);
         response = await containerFetch(container, request, {
           containerName: 'container',
-          route: getRouteFromRequest(request),
-          env
+          route: getRouteFromRequest(request)
         });
       }
 
@@ -737,8 +736,7 @@ export default {
         let container = env.MY_CONTAINER.get(id);
         response = await containerFetch(container, request, {
           containerName: 'error-test',
-          route: getRouteFromRequest(request),
-          env
+          route: getRouteFromRequest(request)
         });
       }
 
@@ -748,8 +746,7 @@ export default {
         let container = await loadBalance(env.MY_CONTAINER, 3);
         response = await containerFetch(container, request, {
           containerName: 'load-balanced',
-          route: getRouteFromRequest(request),
-          env
+          route: getRouteFromRequest(request)
         });
       }
 
@@ -759,8 +756,7 @@ export default {
         const container: DurableObjectStub<Container<unknown>> = getContainer(env.MY_CONTAINER);
         response = await containerFetch(container, request, {
           containerName: 'singleton',
-          route: getRouteFromRequest(request),
-          env
+          route: getRouteFromRequest(request)
         });
       }
 

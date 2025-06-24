@@ -38,14 +38,6 @@ After deployment, you'll need to configure your Claude AI integration:
 
 Once you complete the Anthropic API setup, you'll be redirected to the `/gh-setup` endpoint (or you can access it manually), which will guide you through installing the GitHub App and configuring access to your repositories. The system will automatically capture installation details.
 
-## 🔧 Environment Variables (THIS SHOULD GO AWAY)
-
-Set these in your Cloudflare Worker environment, or locally using `.dev.vars`:
-
-```bash
-# Development mode - until the issue with the containers package is resolved, manually run the container and get the worker to connect to it.
-WRANGLER_CONTAINERS_ISSUE_HACK=true
-```
 
 ## 📋 Usage
 

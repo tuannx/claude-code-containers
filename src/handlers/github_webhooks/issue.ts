@@ -81,8 +81,7 @@ async function routeToClaudeCodeContainer(issue: any, repository: any, env: any,
       body: JSON.stringify(issueContext)
     }), {
       containerName,
-      route: '/process-issue',
-      env
+      route: '/process-issue'
     });
 
     logWithContext('CLAUDE_ROUTING', 'Claude Code container response', {
@@ -216,8 +215,7 @@ export async function handleIssuesEvent(data: any, env: any, configDO: any): Pro
     body: JSON.stringify(webhookPayload)
   }), {
     containerName,
-    route: '/webhook',
-    env
+    route: '/webhook'
   });
 
   return new Response('Issues event processed', { status: 200 });
