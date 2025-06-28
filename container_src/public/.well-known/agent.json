@@ -1,0 +1,110 @@
+{
+  "name": "Claude Code Agent",
+  "description": "An agent that can delegate coding tasks to an underlying Claude Code service. It can process natural language instructions to generate, modify, or explain code.",
+  "version": "0.1.0",
+  "capabilities": [
+    {
+      "method": "tasks/send",
+      "description": "Submits a new coding task to the Claude Code Agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "A unique identifier for the task." },
+          "message": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "enum": ["user"] },
+              "parts": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "text": { "type": "string", "description": "The natural language instruction for the coding task." }
+                  },
+                  "required": ["text"]
+                }
+              ]
+            },
+            "required": ["role", "parts"]
+          },
+          "context": {
+            "type": "object",
+            "description": "Optional context for the task, e.g., repository URL, file paths, existing code snippets.",
+            "additionalProperties": true
+          }
+        },
+        "required": ["id", "message"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "state": { "type": "string", "enum": ["submitted", "working", "input-required", "completed", "failed", "canceled"] },
+          "message": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "enum": ["agent"] },
+              "parts": [ { "type": "object", "properties": { "text": { "type": "string" } } } ]
+            }
+          }
+        },
+        "required": ["id", "state"]
+      }
+    },
+    {
+      "method": "tasks/get",
+      "description": "Retrieves the status of a previously submitted task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The unique identifier of the task to retrieve." }
+        },
+        "required": ["id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "state": { "type": "string", "enum": ["submitted", "working", "input-required", "completed", "failed", "canceled", "unknown"] },
+          "message": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "enum": ["agent"] },
+              "parts": [ { "type": "object", "properties": { "text": { "type": "string" } } } ]
+            },
+            "required": ["role", "parts"]
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "mimeType": { "type": "string" },
+                "parts": [ { "type": "object", "properties": { "text": { "type": "string" }, "base64": { "type": "string" } } } ]
+              },
+              "required": ["name", "mimeType", "parts"]
+            }
+          }
+        },
+        "required": ["id", "state"]
+      }
+    }
+  ],
+  "endpoints": [
+    {
+      "type": "jsonrpc",
+      "url": "/rpc"
+    }
+  ],
+  "authentication": {
+    "type": "oauth2",
+    "flows": {
+      "clientCredentials": {
+        "tokenUrl": "/oauth/token"
+      }
+    }
+  },
+  "contact": {
+    "email": "support@example.com"
+  }
+}

@@ -1,3 +1,4 @@
+import express, { Request as ExpressRequest, Response as ExpressResponse, NextFunction } from 'express';
 import * as http from 'http';
 import { promises as fs } from 'fs';
 import { query, type SDKMessage } from '@anthropic-ai/claude-code';
@@ -5,8 +6,41 @@ import simpleGit from 'simple-git';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { ContainerGitHubClient } from './github_client.js';
+import { JSONRPCServer, JSONRPCErrorCode, JSONRPCErrorException } from 'json-rpc-2.0';
+import { v4 as uuidv4 } from 'uuid';
+import { InMemoryTaskStore, Task, TaskState, TaskMessage as A2ATaskMessage } from './a2a_task_store.js'; // Ensure .js extension if using ES modules
+import OAuth2Server, { Request as OAuthRequest, Response as OAuthResponse } from 'oauth2-server';
+import oauthModel from './a2a_oauth_model.js'; // Import the OAuth model
 
-const PORT = 8080;
+const PORT = process.env.PORT || 8080; // Use environment variable for port if available
+const app = express();
+const server = http.createServer(app); // Create HTTP server with Express app
+
+// --- OAuth Server Setup ---
+const oauth = new OAuth2Server({
+  model: oauthModel,
+  accessTokenLifetime: 60 * 60, // 1 hour
+  allowBearerTokensInQueryString: false // Standard practice
+});
+
+// Middleware to authenticate requests for protected routes
+const authenticateRequest = (req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
+  logWithContext('OAUTH_AUTH', 'Authenticating request for A2A endpoint', { path: req.path });
+  const request = new OAuthRequest(req);
+  const response = new OAuthResponse(res);
+
+  return oauth.authenticate(request, response)
+    .then((token) => {
+      // @ts-ignore // Add token to request for use in handlers if needed
+      req.token = token;
+      logWithContext('OAUTH_AUTH', 'Authentication successful', { client: token.client.id, user: token.user?.id });
+      next();
+    })
+    .catch((err) => {
+      logWithContext('OAUTH_AUTH', 'Authentication failed', { error: err.message, code: err.code, path: req.path });
+      res.status(err.code || 500).json(err);
+    });
+};
 
 // Simplified container response interface
 interface ContainerResponse {
@@ -41,7 +75,6 @@ interface HealthStatus {
 }
 
 
-
 // Enhanced logging utility with context
 function logWithContext(context: string, message: string, data?: any): void {
   const timestamp = new Date().toISOString();
@@ -54,10 +87,178 @@ function logWithContext(context: string, message: string, data?: any): void {
   }
 }
 
-// Basic health check handler
-async function healthHandler(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  logWithContext('HEALTH', 'Health check requested');
+// --- A2A Specific Setup ---
+const taskStore = new InMemoryTaskStore();
+const rpcServer = new JSONRPCServer();
 
+// --- Claude Code Execution Logic for A2A ---
+async function executeClaudeCodeTask(taskId: string, prompt: string, taskContext?: any) {
+  logWithContext('A2A_CLAUDE_EXEC', `Starting Claude execution for task ${taskId}`, { prompt, taskContext });
+
+  let workspaceDir: string | undefined;
+  const originalCwd = process.cwd();
+  let results: SDKMessage[] = [];
+  let turnCount = 0;
+
+  try {
+    await taskStore.updateTask(taskId, "working", { message: { role: "agent", parts: [{ text: "Preparing environment for Claude Code..." }] } });
+
+    // Minimal context for now, primarily focused on the direct prompt
+    // Workspace setup could be added here if taskContext.repositoryUrl is provided
+    // For simplicity, let's assume Claude can operate on a general prompt first
+    // or that the necessary files are already in a known location if needed by the prompt.
+
+    // If a repository URL is provided in the A2A context, set up a workspace
+    if (taskContext?.repositoryUrl) {
+        // Construct a unique identifier for the workspace, e.g. using task ID
+        const issueNumberForWorkspace = `a2a-${taskId}`;
+        workspaceDir = await setupWorkspace(taskContext.repositoryUrl, issueNumberForWorkspace);
+        process.chdir(workspaceDir);
+        logWithContext('A2A_CLAUDE_EXEC', `Changed working directory to ${workspaceDir} for task ${taskId}`);
+        await taskStore.updateTask(taskId, "working", { message: { role: "agent", parts: [{ text: `Cloned repository ${taskContext.repositoryUrl}. Starting Claude Code...` }] } });
+    } else {
+        await taskStore.updateTask(taskId, "working", { message: { role: "agent", parts: [{ text: "Starting Claude Code with provided prompt..." }] } });
+    }
+
+    const claudeStartTime = Date.now();
+    for await (const message of query({
+      prompt, // Use the direct prompt from A2A task
+      options: { permissionMode: 'bypassPermissions' } // As used in original processIssue
+    })) {
+      turnCount++;
+      results.push(message);
+      logWithContext('A2A_CLAUDE_EXEC', `Task ${taskId}: Claude turn ${turnCount}`, { type: message.type });
+      // Optionally update task store with intermediate messages if streaming is implemented later
+      // For now, we'll just collect results.
+    }
+    const claudeDuration = Date.now() - claudeStartTime;
+    logWithContext('A2A_CLAUDE_EXEC', `Task ${taskId}: Claude query completed`, { totalTurns: turnCount, duration: claudeDuration });
+
+    const solutionText = results.length > 0 ? getMessageText(results[results.length - 1]) : "No textual output from Claude.";
+
+    // Here, we could check for file changes if workspaceDir is defined, similar to detectGitChanges
+    // and then package them as artifacts. For now, just the text output.
+    const artifacts = [];
+    if (workspaceDir) {
+        const hasChanges = await detectGitChanges(workspaceDir);
+        if (hasChanges) {
+            // This part would need more logic to package changes as artifacts.
+            // For now, we'll just note that changes were made.
+            logWithContext('A2A_CLAUDE_EXEC', `Task ${taskId}: File changes detected in workspace. Artifact creation would go here.`);
+            artifacts.push({
+                name: "code_changes_summary.txt",
+                mimeType: "text/plain",
+                parts: [{ text: "Code changes were made in the workspace. Diff/patch artifact generation is pending." }]
+            });
+        }
+    }
+
+
+    await taskStore.updateTask(taskId, "completed", {
+      message: { role: "agent", parts: [{ text: "Claude Code processing complete." }] },
+      artifacts: [
+        ...artifacts,
+        { name: "claude_output.txt", mimeType: "text/plain", parts: [{ text: solutionText }] }
+      ]
+    });
+    logWithContext('A2A_CLAUDE_EXEC', `Task ${taskId} completed successfully.`);
+
+  } catch (error) {
+    logWithContext('A2A_CLAUDE_EXEC', `Error during Claude execution for task ${taskId}`, { error: (error as Error).message, stack: (error as Error).stack });
+    await taskStore.updateTask(taskId, "failed", {
+      message: { role: "agent", parts: [{ text: "An error occurred during Claude Code processing." }] },
+      error: { code: -32001, message: (error as Error).message } // Custom error code for Claude execution failure
+    });
+  } finally {
+    if (workspaceDir) {
+      process.chdir(originalCwd);
+      logWithContext('A2A_CLAUDE_EXEC', `Restored original working directory from ${workspaceDir} for task ${taskId}`);
+      // Optionally, clean up workspaceDir: await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  }
+}
+
+
+// A2A Method: tasks/send
+rpcServer.addMethod("tasks/send", async (params: any) => {
+  logWithContext('A2A_RPC', 'tasks/send called', params);
+  if (!params || typeof params !== 'object' || !params.id || !params.message || !params.message.parts || !params.message.parts[0]?.text) {
+    throw new JSONRPCErrorException("Invalid params: 'id', 'message.parts[0].text' are required.", JSONRPCErrorCode.InvalidParams);
+  }
+
+  const { id, message, context } = params as { id: string, message: A2ATaskMessage, context?: any };
+  const promptText = message.parts[0].text!;
+
+  try {
+    await taskStore.createTask(id, params, context, message);
+    await taskStore.updateTask(id, "submitted", { message: { role: "agent", parts: [{ text: "Task submitted. Queued for Claude Code processing." }] } });
+
+    // Execute Claude Code task asynchronously
+    executeClaudeCodeTask(id, promptText, context).catch(err => {
+        // Ensure critical errors during async execution are logged if not handled by executeClaudeCodeTask's own try/catch
+        logWithContext('A2A_RPC_EXEC_UNHANDLED', `Unhandled error in async executeClaudeCodeTask for ${id}`, {error: (err as Error).message});
+    });
+
+    const currentTaskState = await taskStore.getTask(id); // Should reflect "submitted" or "working" quickly
+    logWithContext('A2A_RPC', 'tasks/send initiated Claude execution', currentTaskState);
+    return { // Return immediately after queuing
+      id: currentTaskState?.id,
+      state: currentTaskState?.state,
+      message: currentTaskState?.message
+    };
+  } catch (error) {
+    logWithContext('A2A_RPC', 'Error in tasks/send setup', { error: (error as Error).message });
+    // This catch is for errors during task creation or initial update, not for the async Claude execution
+    throw new JSONRPCErrorException("Internal server error setting up task.", JSONRPCErrorCode.InternalError, error);
+  }
+});
+
+// A2A Method: tasks/get
+rpcServer.addMethod("tasks/get", async (params: any) => {
+  logWithContext('A2A_RPC', 'tasks/get called', params);
+  if (!params || typeof params !== 'object' || !params.id) {
+    throw new JSONRPCErrorException("Invalid params: 'id' is required.", JSONRPCErrorCode.InvalidParams);
+  }
+  const { id } = params as { id: string };
+  const task = await taskStore.getTask(id);
+  if (!task) {
+    throw new JSONRPCErrorException("Task not found.", -32000); // Custom error code for Task not found
+  }
+  logWithContext('A2A_RPC', 'tasks/get completed', task);
+  return task; // Return the full task object as per A2A spec (potentially)
+});
+
+// --- Express Middleware and Routes ---
+app.use(express.json()); // Middleware to parse JSON bodies
+
+// Serve Agent Card statically
+app.use('/.well-known', express.static(path.join(__dirname, '../public/.well-known')));
+
+
+// A2A RPC Endpoint
+app.post("/rpc", (req, res) => {
+  const jsonRPCRequest = req.body;
+  logWithContext('A2A_HTTP', 'Received A2A RPC request', jsonRPCRequest);
+  rpcServer.receive(jsonRPCRequest).then((jsonRPCResponse) => {
+    if (jsonRPCResponse) {
+      res.json(jsonRPCResponse);
+      logWithContext('A2A_HTTP', 'Sent A2A RPC response', jsonRPCResponse);
+    } else {
+      // Notification, no response needed
+      res.sendStatus(204);
+      logWithContext('A2A_HTTP', 'A2A RPC request was a notification.');
+    }
+  }).catch(error => {
+      logWithContext('A2A_HTTP', 'Error processing A2A RPC request', { error });
+      // This catch is for errors during rpcServer.receive() itself, not for errors within methods
+      res.status(500).json({ error: "Internal Server Error during RPC processing" });
+  });
+});
+
+
+// Basic health check handler (Express style)
+app.get(['/', '/container', '/health'], async (_req, res) => {
+  logWithContext('HEALTH', 'Health check requested');
   const response: HealthStatus = {
     status: 'healthy',
     message: MESSAGE,
@@ -66,22 +267,21 @@ async function healthHandler(_req: http.IncomingMessage, res: http.ServerRespons
     claudeCodeAvailable: !!process.env.ANTHROPIC_API_KEY,
     githubTokenAvailable: !!process.env.GITHUB_TOKEN
   };
-
   logWithContext('HEALTH', 'Health check response', {
     status: response.status,
     claudeCodeAvailable: response.claudeCodeAvailable,
     githubTokenAvailable: response.githubTokenAvailable,
     instanceId: response.instanceId
   });
+  res.status(200).json(response);
+});
 
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(response));
-}
-
-// Error handler for testing
-async function errorHandler(_req: http.IncomingMessage, _res: http.ServerResponse): Promise<void> {
+// Error handler for testing (Express style)
+app.get('/error', async (_req, _res) => {
+  logWithContext('ERROR_ROUTE', 'Error test route triggered');
   throw new Error('This is a test error from the container');
-}
+});
+
 
 // Setup isolated workspace for issue processing using proper git clone
 async function setupWorkspace(repositoryUrl: string, issueNumber: string): Promise<string> {
@@ -539,20 +739,16 @@ function generatePRBody(prSummary: string | null, _solution: string, issueNumber
   return body;
 }
 
-// Main issue processing handler
-async function processIssueHandler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+// Main issue processing handler (Express style)
+app.post('/process-issue', async (req, res) => {
   logWithContext('ISSUE_HANDLER', 'Processing issue request');
 
-  // Read request body to get environment variables if they're passed in the request
-  let requestBody = '';
-  for await (const chunk of req) {
-    requestBody += chunk;
-  }
-
+  const requestBody = req.body; // Assuming express.json() middleware is used
   let issueContextFromRequest: any = {};
+
   if (requestBody) {
     try {
-      issueContextFromRequest = JSON.parse(requestBody);
+      issueContextFromRequest = requestBody; // Already parsed by express.json()
       logWithContext('ISSUE_HANDLER', 'Received issue context in request body', {
         hasAnthropicKey: !!issueContextFromRequest.ANTHROPIC_API_KEY,
         hasGithubToken: !!issueContextFromRequest.GITHUB_TOKEN,
@@ -560,36 +756,16 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
       });
 
       // Set environment variables from request body if they exist
-      if (issueContextFromRequest.ANTHROPIC_API_KEY) {
-        process.env.ANTHROPIC_API_KEY = issueContextFromRequest.ANTHROPIC_API_KEY;
-      }
-      if (issueContextFromRequest.GITHUB_TOKEN) {
-        process.env.GITHUB_TOKEN = issueContextFromRequest.GITHUB_TOKEN;
-      }
-      if (issueContextFromRequest.ISSUE_ID) {
-        process.env.ISSUE_ID = issueContextFromRequest.ISSUE_ID;
-      }
-      if (issueContextFromRequest.ISSUE_NUMBER) {
-        process.env.ISSUE_NUMBER = issueContextFromRequest.ISSUE_NUMBER;
-      }
-      if (issueContextFromRequest.ISSUE_TITLE) {
-        process.env.ISSUE_TITLE = issueContextFromRequest.ISSUE_TITLE;
-      }
-      if (issueContextFromRequest.ISSUE_BODY) {
-        process.env.ISSUE_BODY = issueContextFromRequest.ISSUE_BODY;
-      }
-      if (issueContextFromRequest.ISSUE_LABELS) {
-        process.env.ISSUE_LABELS = issueContextFromRequest.ISSUE_LABELS;
-      }
-      if (issueContextFromRequest.REPOSITORY_URL) {
-        process.env.REPOSITORY_URL = issueContextFromRequest.REPOSITORY_URL;
-      }
-      if (issueContextFromRequest.REPOSITORY_NAME) {
-        process.env.REPOSITORY_NAME = issueContextFromRequest.REPOSITORY_NAME;
-      }
-      if (issueContextFromRequest.ISSUE_AUTHOR) {
-        process.env.ISSUE_AUTHOR = issueContextFromRequest.ISSUE_AUTHOR;
-      }
+      if (issueContextFromRequest.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = issueContextFromRequest.ANTHROPIC_API_KEY;
+      if (issueContextFromRequest.GITHUB_TOKEN) process.env.GITHUB_TOKEN = issueContextFromRequest.GITHUB_TOKEN;
+      if (issueContextFromRequest.ISSUE_ID) process.env.ISSUE_ID = issueContextFromRequest.ISSUE_ID;
+      if (issueContextFromRequest.ISSUE_NUMBER) process.env.ISSUE_NUMBER = issueContextFromRequest.ISSUE_NUMBER;
+      if (issueContextFromRequest.ISSUE_TITLE) process.env.ISSUE_TITLE = issueContextFromRequest.ISSUE_TITLE;
+      if (issueContextFromRequest.ISSUE_BODY) process.env.ISSUE_BODY = issueContextFromRequest.ISSUE_BODY;
+      if (issueContextFromRequest.ISSUE_LABELS) process.env.ISSUE_LABELS = issueContextFromRequest.ISSUE_LABELS;
+      if (issueContextFromRequest.REPOSITORY_URL) process.env.REPOSITORY_URL = issueContextFromRequest.REPOSITORY_URL;
+      if (issueContextFromRequest.REPOSITORY_NAME) process.env.REPOSITORY_NAME = issueContextFromRequest.REPOSITORY_NAME;
+      if (issueContextFromRequest.ISSUE_AUTHOR) process.env.ISSUE_AUTHOR = issueContextFromRequest.ISSUE_AUTHOR;
 
       logWithContext('ISSUE_HANDLER', 'Environment variables updated from request', {
         anthropicKeySet: !!process.env.ANTHROPIC_API_KEY,
@@ -597,19 +773,16 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
         issueIdSet: !!process.env.ISSUE_ID
       });
     } catch (error) {
-      logWithContext('ISSUE_HANDLER', 'Error parsing request body', {
-        error: (error as Error).message,
-        bodyLength: requestBody.length
+      logWithContext('ISSUE_HANDLER', 'Error processing request body (should not happen with express.json)', {
+        error: (error as Error).message
       });
     }
   }
 
-  // Check for API key (now potentially updated from request)
+  // Check for API key
   if (!process.env.ANTHROPIC_API_KEY) {
     logWithContext('ISSUE_HANDLER', 'Missing Anthropic API key');
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'ANTHROPIC_API_KEY not provided' }));
-    return;
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY not provided' });
   }
 
   if (!process.env.ISSUE_ID || !process.env.REPOSITORY_URL) {
@@ -617,9 +790,7 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
       hasIssueId: !!process.env.ISSUE_ID,
       hasRepositoryUrl: !!process.env.REPOSITORY_URL
     });
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Issue context not provided' }));
-    return;
+    return res.status(400).json({ error: 'Issue context not provided' });
   }
 
   const issueContext: IssueContext = {
@@ -641,99 +812,54 @@ async function processIssueHandler(req: http.IncomingMessage, res: http.ServerRe
     labelsCount: issueContext.labels.length
   });
 
-  // Process issue and return structured response
   try {
     const githubToken = process.env.GITHUB_TOKEN;
     if (!githubToken) {
       throw new Error('GITHUB_TOKEN is required but not provided');
     }
-
     const containerResponse = await processIssue(issueContext, githubToken);
-
     logWithContext('ISSUE_HANDLER', 'Issue processing completed', {
       success: containerResponse.success,
       message: containerResponse.message,
       hasError: !!containerResponse.error
     });
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(containerResponse));
+    res.status(200).json(containerResponse);
   } catch (error) {
     logWithContext('ISSUE_HANDLER', 'Issue processing failed', {
       error: error instanceof Error ? error.message : String(error),
       issueId: issueContext.issueId
     });
-
     const errorResponse: ContainerResponse = {
       success: false,
       message: 'Failed to process issue',
       error: error instanceof Error ? error.message : String(error)
     };
-
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(errorResponse));
+    res.status(500).json(errorResponse);
   }
-}
+});
 
-// Route handler
-async function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  const { method, url } = req;
-  const startTime = Date.now();
 
-  logWithContext('REQUEST_HANDLER', 'Incoming request', {
-    method,
-    url,
-    headers: req.headers,
-    remoteAddress: req.socket.remoteAddress
+// Catch-all error handler for Express
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  logWithContext('EXPRESS_ERROR', 'Unhandled error in Express route', {
+    error: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method
   });
-
-  try {
-    if (url === '/' || url === '/container') {
-      logWithContext('REQUEST_HANDLER', 'Routing to health handler');
-      await healthHandler(req, res);
-    } else if (url === '/error') {
-      logWithContext('REQUEST_HANDLER', 'Routing to error handler');
-      await errorHandler(req, res);
-    } else if (url === '/process-issue') {
-      logWithContext('REQUEST_HANDLER', 'Routing to process issue handler');
-      await processIssueHandler(req, res);
-    } else {
-      logWithContext('REQUEST_HANDLER', 'Route not found', { url });
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
-    }
-
-    const processingTime = Date.now() - startTime;
-    logWithContext('REQUEST_HANDLER', 'Request completed successfully', {
-      method,
-      url,
-      processingTimeMs: processingTime
-    });
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-
-    logWithContext('REQUEST_HANDLER', 'Request handler error', {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      method,
-      url,
-      processingTimeMs: processingTime
-    });
-
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      error: 'Internal server error',
-      message: (error as Error).message
-    }));
+  if (res.headersSent) {
+    return next(err);
   }
-}
+  res.status(500).json({
+    error: 'Internal server error',
+    message: err.message
+  });
+});
+
 
 // Start server
-const server = http.createServer(requestHandler);
-
-server.listen(PORT, '0.0.0.0', () => {
-  logWithContext('SERVER', 'Claude Code container server started', {
+server.listen(PORT, () => { // Removed '0.0.0.0' as it's often default or handled by Express/Node
+  logWithContext('SERVER', 'Claude Code container server started with Express', {
     port: PORT,
     host: '0.0.0.0',
     pid: process.pid,
