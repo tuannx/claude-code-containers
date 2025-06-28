@@ -1,0 +1,20 @@
+name = "claude-code-containers-2"
+main = "src/index.js"
+workers_dev = true
+compatibility_date = "2025-05-23"
+compatibility_flags = [ "nodejs_compat" ]
+
+[[migrations]]
+tag = "v2"
+new_classes = [ "GitHubAppConfigDO", "MyContainer" ]
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "GITHUB_APP_CONFIG"
+class_name = "GitHubAppConfigDO"
+
+[[durable_objects.bindings]]
+name = "MY_CONTAINER"
+class_name = "MyContainer"
