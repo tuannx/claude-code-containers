@@ -2,6 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "claude-code-containers-2",
 	"main": "src/index.ts",
+	"account_id": "05130ca1f0bdabbab4d08a5d75544e92",
 	"compatibility_date": "2025-05-23",
 	"compatibility_flags": [
 		"nodejs_compat"
