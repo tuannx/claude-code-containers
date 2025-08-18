@@ -35,6 +35,12 @@ const clients: OAuthClient[] = [
 const tokens: OAuthToken[] = [];
 
 const model: ClientCredentialsModel = {
+  getUserFromClient: async (client: Client): Promise<User | Falsey> => {
+    // For client_credentials flow, we can return a system user or the client itself
+    console.log('OAuthModel: getUserFromClient called for client:', client.id);
+    return { id: `system-user-${client.id}` };
+  },
+
   getClient: async (clientId: string, clientSecret: string | null): Promise<OAuthClient | Falsey> => {
     console.log(`OAuthModel: getClient called for clientId: ${clientId}`);
     const client = clients.find(c => c.id === clientId);

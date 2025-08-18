@@ -236,10 +236,12 @@ app.use('/.well-known', express.static(path.join(__dirname, '../public/.well-kno
 
 
 // A2A RPC Endpoint
-app.post("/rpc", (req, res) => {
+app.post("/rpc", async (req, res) => {
   const jsonRPCRequest = req.body;
   logWithContext('A2A_HTTP', 'Received A2A RPC request', jsonRPCRequest);
-  rpcServer.receive(jsonRPCRequest).then((jsonRPCResponse) => {
+  
+  try {
+    const jsonRPCResponse = await rpcServer.receive(jsonRPCRequest);
     if (jsonRPCResponse) {
       res.json(jsonRPCResponse);
       logWithContext('A2A_HTTP', 'Sent A2A RPC response', jsonRPCResponse);
@@ -248,11 +250,11 @@ app.post("/rpc", (req, res) => {
       res.sendStatus(204);
       logWithContext('A2A_HTTP', 'A2A RPC request was a notification.');
     }
-  }).catch(error => {
-      logWithContext('A2A_HTTP', 'Error processing A2A RPC request', { error });
-      // This catch is for errors during rpcServer.receive() itself, not for errors within methods
-      res.status(500).json({ error: "Internal Server Error during RPC processing" });
-  });
+  } catch (error: any) {
+    logWithContext('A2A_HTTP', 'Error processing A2A RPC request', { error });
+    // This catch is for errors during rpcServer.receive() itself, not for errors within methods
+    res.status(500).json({ error: "Internal Server Error during RPC processing" });
+  }
 });
 
 
@@ -740,6 +742,7 @@ function generatePRBody(prSummary: string | null, _solution: string, issueNumber
 }
 
 // Main issue processing handler (Express style)
+// @ts-ignore: TypeScript Express route handler type issue
 app.post('/process-issue', async (req, res) => {
   logWithContext('ISSUE_HANDLER', 'Processing issue request');
 
