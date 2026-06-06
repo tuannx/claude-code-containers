@@ -1,0 +1,208 @@
+
+> claude-code-containers-template@0.0.3 dev
+> wrangler dev
+
+
+ ⛅️ wrangler 4.20.5 (update available 4.22.0)
+─────────────────────────────────────────────
+Your Worker has access to the following bindings:
+Binding                                        Resource            Mode
+env.MY_CONTAINER (MyContainer)                 Durable Object      local
+env.GITHUB_APP_CONFIG (GitHubAppConfigDO)      Durable Object      local
+
+⎔ Preparing container image(s)...
+[wrangler:info] Ready on http://localhost:8787
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 872B done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1
+#2 DONE 0.4s
+
+#3 docker-image://docker.io/docker/dockerfile:1@sha256:9857836c9ee4268391bb5b09f9f157f3c91bb15821bb77969642813b0d00518d
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/node:22-slim
+#4 DONE 0.2s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 353B done
+#5 DONE 0.0s
+
+#6 [1/9] FROM docker.io/library/node:22-slim@sha256:b2fa526a10dad3c5ab4b3779eca81607ed05a96160ef5497c36cd4ebed68803d
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 502B 0.1s done
+#7 DONE 0.1s
+
+#8 [4/9] WORKDIR /app
+#8 CACHED
+
+#9 [8/9] COPY container_src/src/ ./src/
+#9 CACHED
+
+#10 [7/9] COPY container_src/tsconfig.json ./
+#10 CACHED
+
+#11 [3/9] RUN npm install -g @anthropic-ai/claude-code
+#11 CACHED
+
+#12 [5/9] COPY container_src/package*.json ./
+#12 CACHED
+
+#13 [6/9] RUN npm install
+#13 CACHED
+
+#14 [2/9] RUN apt-get update &&     apt-get install -y         python3         python3-pip         git         build-essential         python3-dev         ca-certificates &&     rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [9/9] RUN npm run build
+#15 CACHED
+
+#16 exporting to image
+#16 exporting layers done
+#16 writing image sha256:ed97a6b0f1ed264bc70e3aa46d9b3b6025147b8cfd196a7fc92d52b4428a4feb done
+#16 naming to docker.io/cloudflare-dev/mycontainer:bd6535d1 done
+#16 DONE 0.0s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/21h2zwwaaoj71bkdctw2rg1hs
+⎔ Container image(s) ready
+⎔ Starting local server...
+[2025-06-28T04:08:43.756Z] [MAIN_HANDLER] Incoming request {
+  "method": "GET",
+  "pathname": "/",
+  "origin": "http://localhost:8787",
+  "userAgent": "curl/8.7.1",
+  "contentType": null,
+  "referer": null,
+  "cfRay": null,
+  "cfCountry": null
+}
+[2025-06-28T04:08:43.761Z] [MAIN_HANDLER] Serving home page
+[2025-06-28T04:08:43.761Z] [MAIN_HANDLER] Request completed successfully {
+  "pathname": "/",
+  "method": "GET",
+  "status": 200,
+  "statusText": "OK",
+  "processingTimeMs": 6,
+  "routeMatched": true
+}
+[wrangler:info] GET / 200 OK (15ms)
+[2025-06-28T04:08:51.368Z] [MAIN_HANDLER] Incoming request {
+  "method": "POST",
+  "pathname": "/container/rpc",
+  "origin": "http://localhost:8787",
+  "userAgent": "curl/8.7.1",
+  "contentType": "application/json",
+  "referer": null,
+  "cfRay": null,
+  "cfCountry": null
+}
+[2025-06-28T04:08:51.368Z] [MAIN_HANDLER] Routing to basic container
+[2025-06-28T04:08:51.368Z] [CONTAINER_FETCH] Starting fetch to container for route /container/rpc {
+  "url": "http://localhost:8787/container/rpc",
+  "method": "POST",
+  "containerName": "container",
+  "route": "/container/rpc"
+}
+[2025-06-28T04:08:51.386Z] [CONTAINER] Container request received {
+  "method": "POST",
+  "pathname": "/container/rpc",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "br, gzip",
+    "cf-connecting-ip": "::1",
+    "content-length": "280",
+    "content-type": "application/json",
+    "host": "localhost:8787",
+    "user-agent": "curl/8.7.1"
+  }
+}
+[2025-06-28T04:08:51.386Z] [CONTAINER] Using default container behavior
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mError checking if container is ready: connect(): Connection refused: container port not found. Make sure you exposed the port in your container definition.[0m
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mError checking if container is ready: Network connection lost.[0m
+
+
+[2025-06-28T04:09:21.391Z] [CONTAINER_FETCH] Container fetch failed {
+  "containerName": "container",
+  "route": "/container/rpc",
+  "error": "A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.",
+  "duration": "30023ms"
+}
+[2025-06-28T04:09:21.393Z] [MAIN_HANDLER] Request completed successfully {
+  "pathname": "/container/rpc",
+  "method": "POST",
+  "status": 500,
+  "statusText": "Internal Server Error",
+  "processingTimeMs": 30025,
+  "routeMatched": true
+}
+[wrangler:info] POST /container/rpc 500 Internal Server Error (30030ms)
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mUncaught (async) Error: A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.[0m
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mUncaught (in response) Error: A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.[0m
+
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mworkerd/io/actor-sqlite.c++:647: warning: NOSENTRY SQLite alarm handler canceled with requestScheduledAlarm.; scheduledTime = 1751083732.385s; localAlarmState.orDefault(kj::UNIX_EPOCH) = 1751083764.543s; actorId = 521e1df943a3e9fa303ff8a5642d60519e4b6d9258143135db619107df51868b[0m
+
+
+[2025-06-28T04:09:26.651Z] [MAIN_HANDLER] Incoming request {
+  "method": "GET",
+  "pathname": "/container",
+  "origin": "http://localhost:8787",
+  "userAgent": "curl/8.7.1",
+  "contentType": null,
+  "referer": null,
+  "cfRay": null,
+  "cfCountry": null
+}
+[2025-06-28T04:09:26.652Z] [MAIN_HANDLER] Routing to basic container
+[2025-06-28T04:09:26.652Z] [CONTAINER_FETCH] Starting fetch to container for route /container {
+  "url": "http://localhost:8787/container",
+  "method": "GET",
+  "containerName": "container",
+  "route": "/container"
+}
+[2025-06-28T04:09:26.652Z] [CONTAINER] Container request received {
+  "method": "GET",
+  "pathname": "/container",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "br, gzip",
+    "cf-connecting-ip": "::1",
+    "host": "localhost:8787",
+    "user-agent": "curl/8.7.1"
+  }
+}
+[2025-06-28T04:09:26.653Z] [CONTAINER] Using default container behavior
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mError checking if container is ready: connect(): Connection refused: container port not found. Make sure you exposed the port in your container definition.[0m
+
+
+[2025-06-28T04:09:56.665Z] [CONTAINER_FETCH] Container fetch failed {
+  "containerName": "container",
+  "route": "/container",
+  "error": "A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.",
+  "duration": "30013ms"
+}
+[2025-06-28T04:09:56.666Z] [MAIN_HANDLER] Request completed successfully {
+  "pathname": "/container",
+  "method": "GET",
+  "status": 500,
+  "statusText": "Internal Server Error",
+  "processingTimeMs": 30015,
+  "routeMatched": true
+}
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mUncaught (async) Error: A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.[0m
+
+
+[wrangler:info] GET /container 500 Internal Server Error (30028ms)
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mUncaught (in response) Error: A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset.[0m
+
+
+🪵  Logs were written to "/Users/tuannguyen/.wrangler/logs/wrangler-2025-06-28_04-08-14_915.log"
